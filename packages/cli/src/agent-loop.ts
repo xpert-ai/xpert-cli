@@ -1,5 +1,6 @@
 import type { ToolCallSummary } from "@xpert-cli/contracts";
 import { PermissionManager } from "./permissions/manager.js";
+import { buildRunLocalContext } from "./context/run-context.js";
 import { ToolCallGuard } from "./runtime/tool-call-guard.js";
 import { isAbortError, throwIfAborted } from "./runtime/turn-control.js";
 import { pushRecentFile, pushToolSummary } from "./runtime/working-set.js";
@@ -43,12 +44,18 @@ export async function runAgentTurn(options: {
       threadId: options.session.threadId,
       runId: executionId,
     };
+    const localContext = await buildRunLocalContext({
+      config: options.config,
+      session: options.session,
+      signal: options.signal,
+    });
 
     const request = pendingToolMessages
       ? await sdk.resumeWithToolMessages({
           threadId: options.session.threadId,
           executionId: executionId ?? failMissingExecutionId(),
           clientTools: registry.clientTools,
+          localContext,
           toolMessages: pendingToolMessages,
           signal: options.signal,
           onRunCreated: ({ runId, threadId }) => {
@@ -65,6 +72,7 @@ export async function runAgentTurn(options: {
           prompt: options.prompt,
           threadId: options.session.threadId,
           clientTools: registry.clientTools,
+          localContext,
           signal: options.signal,
           onRunCreated: ({ runId, threadId }) => {
             if (runId) {

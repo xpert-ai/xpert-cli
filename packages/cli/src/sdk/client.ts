@@ -1,5 +1,10 @@
 import { Client } from "@xpert-ai/xpert-sdk";
 import type { ClientToolContextDescriptor, ResolvedXpertCliConfig } from "@xpert-cli/contracts";
+import {
+  renderLocalContextBlock,
+  renderPromptWithLocalContext,
+  type RunLocalContext,
+} from "../context/run-context.js";
 import { buildResumeInput, type ClientToolMessageInput } from "./tool-resume.js";
 import { iterateSseResponse } from "./sse.js";
 
@@ -7,6 +12,7 @@ export interface StreamRunRequest {
   prompt: string;
   threadId?: string;
   clientTools: ClientToolContextDescriptor[];
+  localContext: RunLocalContext;
   signal?: AbortSignal;
   onRunCreated?: (params: { runId?: string; threadId?: string }) => void;
 }
@@ -15,6 +21,7 @@ export interface ResumeRunRequest {
   threadId: string;
   executionId: string;
   clientTools: ClientToolContextDescriptor[];
+  localContext: RunLocalContext;
   toolMessages: ClientToolMessageInput[];
   signal?: AbortSignal;
   onRunCreated?: (params: { runId?: string; threadId?: string }) => void;
@@ -66,17 +73,18 @@ export class XpertSdkClient {
       assistantId,
       input: {
         input: {
-          input: request.prompt,
+          input: renderPromptWithLocalContext(request.prompt, request.localContext),
         },
       },
       context: {
         clientTools: request.clientTools,
         client_tool_mode: "local-cli",
         localCli: {
-          projectRoot: this.#config.projectRoot,
-          cwd: this.#config.cwd,
+          projectRoot: request.localContext.projectRoot,
+          cwd: request.localContext.cwd,
           sandboxMode: this.#config.sandboxMode,
         },
+        localContext: request.localContext,
       },
       signal: request.signal,
       onRunCreated: request.onRunCreated,
@@ -89,21 +97,26 @@ export class XpertSdkClient {
     request: ResumeRunRequest,
   ): Promise<RunStreamResponse> {
     const assistantId = this.requireAssistantId();
+    const localContextBlock = renderLocalContextBlock(request.localContext);
     const stream = await this.streamRun({
       threadId: request.threadId,
       assistantId,
       input: buildResumeInput({
         executionId: request.executionId,
-        toolMessages: request.toolMessages,
+        toolMessages: injectLocalContextIntoToolMessages(
+          request.toolMessages,
+          localContextBlock,
+        ),
       }),
       context: {
         clientTools: request.clientTools,
         client_tool_mode: "local-cli",
         localCli: {
-          projectRoot: this.#config.projectRoot,
-          cwd: this.#config.cwd,
+          projectRoot: request.localContext.projectRoot,
+          cwd: request.localContext.cwd,
           sandboxMode: this.#config.sandboxMode,
         },
+        localContext: request.localContext,
       },
       signal: request.signal,
       onRunCreated: request.onRunCreated,
@@ -239,4 +252,38 @@ function buildApiUrl(apiUrl: string, path: string): URL {
   const normalizedBase = apiUrl.endsWith("/") ? apiUrl : `${apiUrl}/`;
   const normalizedPath = path.replace(/^\/+/, "");
   return new URL(normalizedPath, normalizedBase);
+}
+
+function injectLocalContextIntoToolMessages(
+  toolMessages: ClientToolMessageInput[],
+  localContextBlock: string,
+): ClientToolMessageInput[] {
+  const firstMessage = toolMessages[0];
+  if (!firstMessage) {
+    return toolMessages;
+  }
+
+  const rest = toolMessages.slice(1);
+  return [
+    {
+      ...firstMessage,
+      content: `${localContextBlock}\n\nTool result:\n${stringifyToolMessageContent(firstMessage.content)}`,
+    },
+    ...rest,
+  ];
+}
+
+function stringifyToolMessageContent(content: unknown): string {
+  if (typeof content === "string") {
+    return content;
+  }
+  if (content == null) {
+    return "";
+  }
+
+  try {
+    return JSON.stringify(content);
+  } catch {
+    return String(content);
+  }
 }

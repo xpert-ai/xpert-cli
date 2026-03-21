@@ -13,6 +13,7 @@ Local-first terminal coding agent MVP for the `xpert` platform.
   - `Read`
   - `Glob`
   - `Grep`
+  - `Write`
   - `Patch`
   - `Bash`
 - `GitStatus`
@@ -22,6 +23,13 @@ Local-first terminal coding agent MVP for the `xpert` platform.
 - Local host execution by default, not server-side sandbox execution
 - Duplicate tool-call reuse and repeated-call guard inside one turn
 - `Ctrl+C` cancels the current turn and returns to `xpert>` in interactive mode
+- Automatic local context injection on every run and resume:
+  - `XPERT.md` / `xpert.md` content
+  - current `cwd`
+  - `projectRoot`
+  - `git status --short`
+  - recent tool-call summaries
+  - recent changed files
 
 ## Install
 
@@ -128,7 +136,14 @@ node packages/cli/dist/index.js -p "Search for TODO and show me where it appears
 node packages/cli/dist/index.js -p "Change the greeting string in src/demo.ts to Hello from xpert-cli"
 ```
 
-The CLI should show streamed text, local tool execution, patch diff, and store the session locally.
+The CLI should show streamed text, local tool execution, write/patch diff, and store the session locally.
+
+## Editing Tools
+
+- `Write` creates a new file only. It creates parent directories when needed, fails if the file already exists, and shows a unified diff from an empty file to the new content.
+- `Patch` edits existing files with verified, in-memory transforms and shows a unified diff after success.
+- `Patch` supports exact string replacement, line-range replacement with `startLine` and `endLine`, and sequential `multi` edits that combine replace and range operations.
+- `Patch` validates every edit before writing, so failed multi-edit requests do not leave partial file changes behind.
 
 ## Tests
 
@@ -139,18 +154,26 @@ pnpm test
 Covered areas:
 
 - path escape blocking
+- `.git/` write blocking
 - dangerous command detection
 - session store persistence
 - stream interrupt to tool-call adaptation
-- host patch execution
+- host write and patch execution
+- multi-edit atomicity
 - duplicate tool-call guard
 - turn cancellation wiring
+- local context truncation and request injection
 
 ## Known Limits
 
 - `host` is the only implemented backend.
 - API key auth only.
 - Dynamic local tools depend on the accompanying `xpert-pro` patch.
-- `Patch` only supports exact string replacement.
+- `Patch` does not support full unified patch syntax; it supports exact replace, line-range replace, and sequential multi-edit only.
+- `Write` is create-only and will not overwrite existing files.
 - Repeated-call protection is per turn, not global across all future sessions.
+- Local context is intentionally clipped per run:
+  - `XPERT.md` content is truncated
+  - `git status --short` is line-limited
+  - recent files and tool-call summaries are count-limited
 - No heavy TUI, no MCP, no repo map, no plugin ecosystem in this MVP.
