@@ -1,7 +1,11 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import type { PermissionRecord, ToolCallSummary } from "@xpert-cli/contracts";
+import type { PermissionRecord, ToolCallSummary, RiskLevel } from "@xpert-cli/contracts";
+import {
+  sanitizeTurnTranscripts,
+  type TurnTranscript,
+} from "./turn-transcript.js";
 
 export interface CliSessionState {
   sessionId: string;
@@ -14,6 +18,7 @@ export interface CliSessionState {
   recentFiles: string[];
   recentToolCalls: ToolCallSummary[];
   approvals: PermissionRecord[];
+  turns: TurnTranscript[];
   createdAt: string;
   updatedAt: string;
 }
@@ -47,6 +52,7 @@ export class SessionStore {
       recentFiles: [],
       recentToolCalls: [],
       approvals: [],
+      turns: [],
       createdAt: now,
       updatedAt: now,
     };
@@ -55,7 +61,7 @@ export class SessionStore {
   async load(sessionId: string): Promise<CliSessionState | null> {
     try {
       const raw = await readFile(this.getSessionPath(sessionId), "utf8");
-      return JSON.parse(raw) as CliSessionState;
+      return normalizeSessionState(JSON.parse(raw));
     } catch {
       return null;
     }
@@ -92,10 +98,10 @@ export class SessionStore {
 
   async save(session: CliSessionState): Promise<void> {
     await this.ensure();
-    const payload: CliSessionState = {
+    const payload = normalizeSessionState({
       ...session,
       updatedAt: new Date().toISOString(),
-    };
+    });
     await writeFile(
       this.getSessionPath(payload.sessionId),
       `${JSON.stringify(payload, null, 2)}\n`,
@@ -106,4 +112,154 @@ export class SessionStore {
   getSessionPath(sessionId: string): string {
     return path.join(this.#sessionDir, `${sessionId}.json`);
   }
+}
+
+function normalizeSessionState(raw: unknown): CliSessionState {
+  const record = isRecord(raw) ? raw : {};
+  const now = new Date().toISOString();
+
+  return {
+    sessionId: readString(record.sessionId) ?? randomUUID(),
+    threadId: readString(record.threadId),
+    runId: readString(record.runId),
+    checkpointId: readString(record.checkpointId),
+    assistantId: readString(record.assistantId),
+    cwd: readString(record.cwd) ?? process.cwd(),
+    projectRoot: readString(record.projectRoot) ?? process.cwd(),
+    recentFiles: normalizeRecentFiles(record.recentFiles),
+    recentToolCalls: normalizeToolSummaries(record.recentToolCalls),
+    approvals: normalizeApprovalRecords(record.approvals),
+    turns: sanitizeTurnTranscripts(record.turns),
+    createdAt: readString(record.createdAt) ?? now,
+    updatedAt: readString(record.updatedAt) ?? now,
+  };
+}
+
+function normalizeRecentFiles(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function normalizeToolSummaries(value: unknown): ToolCallSummary[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => {
+      const record = isRecord(item) ? item : {};
+      const status = record.status;
+      if (
+        typeof record.id !== "string" ||
+        typeof record.toolName !== "string" ||
+        typeof record.summary !== "string" ||
+        (status !== "success" && status !== "error" && status !== "denied") ||
+        typeof record.createdAt !== "string"
+      ) {
+        return null;
+      }
+
+      return {
+        id: record.id,
+        toolName: record.toolName as ToolCallSummary["toolName"],
+        summary: record.summary,
+        status,
+        createdAt: record.createdAt,
+      };
+    })
+    .filter((item): item is ToolCallSummary => Boolean(item));
+}
+
+function normalizeApprovalRecords(value: unknown): PermissionRecord[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((item) => normalizeApprovalRecord(item))
+    .filter((item): item is PermissionRecord => Boolean(item));
+}
+
+function normalizeApprovalRecord(value: unknown): PermissionRecord | null {
+  const record = isRecord(value) ? value : null;
+  if (!record || typeof record.decision !== "string" || typeof record.createdAt !== "string") {
+    return null;
+  }
+
+  if (record.toolName && typeof record.toolName === "string" && typeof record.scopeType === "string") {
+    return {
+      toolName: record.toolName,
+      decision: record.decision === "deny" ? "deny" : "allow",
+      riskLevel: normalizeRiskLevel(record.riskLevel),
+      scopeType: normalizeScopeType(record.scopeType),
+      ...(typeof record.path === "string" ? { path: record.path } : {}),
+      ...(typeof record.cwd === "string" ? { cwd: record.cwd } : {}),
+      ...(typeof record.command === "string" ? { command: record.command } : {}),
+      ...(typeof record.target === "string" ? { target: record.target } : {}),
+      ...(typeof record.legacyKey === "string" ? { legacyKey: record.legacyKey } : {}),
+      createdAt: record.createdAt,
+    };
+  }
+
+  if (typeof record.key === "string") {
+    const toolName = parseLegacyToolName(record.key);
+    if (!toolName) {
+      return null;
+    }
+
+    return {
+      toolName,
+      decision: record.decision === "deny" ? "deny" : "allow",
+      riskLevel: "moderate",
+      scopeType: "legacy",
+      legacyKey: record.key,
+      createdAt: record.createdAt,
+    };
+  }
+
+  return null;
+}
+
+function parseLegacyToolName(key: string): PermissionRecord["toolName"] | null {
+  const [toolName] = key.split(":", 1);
+  if (!toolName) {
+    return null;
+  }
+  return isToolName(toolName) ? toolName : null;
+}
+
+function isToolName(value: string): value is PermissionRecord["toolName"] {
+  return [
+    "Read",
+    "Glob",
+    "Grep",
+    "Write",
+    "Patch",
+    "Bash",
+    "GitStatus",
+    "GitDiff",
+  ].includes(value);
+}
+
+function normalizeRiskLevel(value: unknown): RiskLevel {
+  return value === "safe" || value === "moderate" || value === "dangerous"
+    ? value
+    : "moderate";
+}
+
+function normalizeScopeType(value: unknown): PermissionRecord["scopeType"] {
+  return value === "path" || value === "command" || value === "tool" || value === "legacy"
+    ? value
+    : "tool";
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === "object" && value !== null;
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }

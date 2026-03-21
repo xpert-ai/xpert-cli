@@ -51,9 +51,11 @@ export async function runRepl(options: {
       ui.printLine();
     } catch (error) {
       if (error instanceof TurnCancelledError) {
+        await options.sessionStore.save(options.session);
         ui.printLine();
         continue;
       }
+      await options.sessionStore.save(options.session);
       throw error;
     }
   }

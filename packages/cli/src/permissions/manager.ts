@@ -4,7 +4,11 @@ import type {
   PermissionRequest,
 } from "@xpert-cli/contracts";
 import type { CliSessionState } from "../runtime/session-store.js";
-import { buildPermissionKey, resolveRiskLevel } from "./rules.js";
+import {
+  createPermissionRecord,
+  matchesPermissionRecord,
+  resolvePermissionScope,
+} from "./rules.js";
 import { promptForPermission } from "../ui/permission.js";
 
 export interface PermissionDecision {
@@ -13,6 +17,17 @@ export interface PermissionDecision {
   riskLevel: PermissionRequest["riskLevel"];
   reason?: string;
   target?: string;
+  scope: string;
+  outcome:
+    | "safe_allow"
+    | "auto_allow"
+    | "remembered_allow"
+    | "remembered_deny"
+    | "allow_once"
+    | "allow_session"
+    | "deny_once"
+    | "deny_session"
+    | "non_interactive_deny";
 }
 
 export class PermissionManager {
@@ -35,53 +50,102 @@ export class PermissionManager {
   }
 
   async request(toolName: string, args: unknown): Promise<PermissionDecision> {
-    const { riskLevel, reason, target } = resolveRiskLevel(toolName, args);
-    const key = buildPermissionKey(toolName, args);
+    const scope = resolvePermissionScope(toolName, args, {
+      projectRoot: this.#session.projectRoot,
+      defaultCwd: this.#session.cwd,
+    });
 
-    if (riskLevel === "safe") {
-      return { allowed: true, riskLevel, reason, target };
+    if (scope.riskLevel === "safe") {
+      return {
+        allowed: true,
+        riskLevel: scope.riskLevel,
+        reason: scope.reason,
+        target: scope.target,
+        scope: scope.summary,
+        outcome: "safe_allow",
+      };
     }
 
-    if (this.#approvalMode === "auto" && riskLevel === "moderate") {
-      return { allowed: true, riskLevel, reason, target };
+    if (this.#approvalMode === "auto" && scope.riskLevel === "moderate") {
+      return {
+        allowed: true,
+        riskLevel: scope.riskLevel,
+        reason: scope.reason,
+        target: scope.target,
+        scope: scope.summary,
+        outcome: "auto_allow",
+      };
     }
 
-    const existing = this.#session.approvals.find((record) => record.key === key);
+    const existing = this.#session.approvals.find((record) =>
+      matchesPermissionRecord(record, scope, args),
+    );
     if (existing) {
       return {
         allowed: existing.decision === "allow",
         remembered: true,
-        riskLevel,
-        reason,
-        target,
+        riskLevel: scope.riskLevel,
+        reason: scope.reason,
+        target: scope.target,
+        scope: scope.summary,
+        outcome: existing.decision === "allow" ? "remembered_allow" : "remembered_deny",
       };
     }
 
     if (this.#approvalMode === "never" || !this.#interactive) {
-      return { allowed: false, riskLevel, reason, target };
+      return {
+        allowed: false,
+        riskLevel: scope.riskLevel,
+        reason: scope.reason,
+        target: scope.target,
+        scope: scope.summary,
+        outcome: "non_interactive_deny",
+      };
     }
 
     const result = await promptForPermission({
       toolName,
-      riskLevel,
-      reason,
-      target,
+      riskLevel: scope.riskLevel,
+      reason: scope.reason,
+      target: scope.target,
+      scope: scope.summary,
+      canRememberAllow: scope.canRememberAllow,
+      canRememberDeny: scope.canRememberDeny,
     });
 
-    if (result.outcome === "allow_session" && riskLevel === "moderate") {
-      this.#session.approvals.push({
-        key,
-        decision: "allow",
-        createdAt: new Date().toISOString(),
-      });
-      return { allowed: true, remembered: true, riskLevel, reason, target };
+    if (result.outcome === "allow_session" && scope.canRememberAllow) {
+      this.#session.approvals.push(createPermissionRecord(scope, "allow"));
+      return {
+        allowed: true,
+        remembered: true,
+        riskLevel: scope.riskLevel,
+        reason: scope.reason,
+        target: scope.target,
+        scope: scope.summary,
+        outcome: "allow_session",
+      };
+    }
+
+    if (result.outcome === "deny_session" && scope.canRememberDeny) {
+      this.#session.approvals.push(createPermissionRecord(scope, "deny"));
+      return {
+        allowed: false,
+        remembered: true,
+        riskLevel: scope.riskLevel,
+        reason: scope.reason,
+        target: scope.target,
+        scope: scope.summary,
+        outcome: "deny_session",
+      };
     }
 
     return {
       allowed: result.outcome === "allow_once",
-      riskLevel,
-      reason,
-      target,
+      riskLevel: scope.riskLevel,
+      reason: scope.reason,
+      target: scope.target,
+      scope: scope.summary,
+      outcome: result.outcome === "allow_once" ? "allow_once" : "deny_once",
     };
   }
 }

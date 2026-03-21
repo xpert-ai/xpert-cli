@@ -25,6 +25,20 @@ describe("SessionStore", () => {
 
     session.threadId = "thread-1";
     session.runId = "run-1";
+    session.turns.push({
+      turnId: "turn-1",
+      prompt: "Read README.md",
+      startedAt: "2026-03-21T00:00:00.000Z",
+      finishedAt: "2026-03-21T00:00:01.000Z",
+      threadId: "thread-1",
+      runId: "run-1",
+      checkpointId: "checkpoint-1",
+      status: "completed",
+      assistantText: "done",
+      toolEvents: [],
+      permissionEvents: [],
+      changedFiles: [],
+    });
 
     await store.save(session);
     const restored = await store.load(session.sessionId);
@@ -35,6 +49,8 @@ describe("SessionStore", () => {
       runId: "run-1",
       assistantId: "assistant-1",
     });
+    expect(restored?.turns).toHaveLength(1);
+    expect(restored?.turns[0]?.prompt).toBe("Read README.md");
   });
 
   it("resolves the latest session for the current project root", async () => {

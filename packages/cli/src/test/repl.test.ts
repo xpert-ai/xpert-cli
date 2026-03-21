@@ -64,6 +64,7 @@ describe("runRepl", () => {
         approvals: [],
         recentFiles: [],
         recentToolCalls: [],
+        turns: [],
         updatedAt: new Date().toISOString(),
         createdAt: new Date().toISOString(),
       },

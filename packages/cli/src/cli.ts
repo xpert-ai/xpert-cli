@@ -75,9 +75,11 @@ async function runMain(options: GlobalOptions): Promise<void> {
       await sessionStore.save(nextSession);
     } catch (error) {
       if (error instanceof TurnCancelledError) {
+        await sessionStore.save(session);
         process.exitCode = 130;
         return;
       }
+      await sessionStore.save(session);
       throw error;
     }
     return;
