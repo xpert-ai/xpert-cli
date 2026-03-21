@@ -21,6 +21,7 @@ export const bashTool: ToolDefinition<{
       cwd: args.cwd ?? context.cwd,
       timeoutMs: args.timeoutMs,
       onLine: (line) => context.ui.printBashLine(line),
+      signal: context.signal,
     });
 
     const content = [

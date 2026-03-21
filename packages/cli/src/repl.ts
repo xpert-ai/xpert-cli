@@ -2,6 +2,7 @@ import readline from "node:readline/promises";
 import type { ResolvedXpertCliConfig } from "@xpert-cli/contracts";
 import type { CliSessionState, SessionStore } from "./runtime/session-store.js";
 import { runAgentTurn } from "./agent-loop.js";
+import { runInterruptibleTurn, TurnCancelledError } from "./runtime/turn-control.js";
 import { UiRenderer } from "./ui/renderer.js";
 
 export async function runRepl(options: {
@@ -29,14 +30,32 @@ export async function runRepl(options: {
       break;
     }
 
-    options.session = await runAgentTurn({
-      prompt,
-      config: options.config,
-      session: options.session,
-      interactive: true,
-    });
-    await options.sessionStore.save(options.session);
-    ui.printLine();
+    try {
+      options.session = await runInterruptibleTurn(
+        (signal) =>
+          runAgentTurn({
+            prompt,
+            config: options.config,
+            session: options.session,
+            interactive: true,
+            signal,
+          }),
+        {
+          onCancel: () => {
+            ui.printLine();
+            ui.printWarning("cancelled current turn");
+          },
+        },
+      );
+      await options.sessionStore.save(options.session);
+      ui.printLine();
+    } catch (error) {
+      if (error instanceof TurnCancelledError) {
+        ui.printLine();
+        continue;
+      }
+      throw error;
+    }
   }
 }
 

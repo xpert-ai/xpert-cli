@@ -23,6 +23,7 @@ export interface ExecutionBackend {
       cwd?: string;
       timeoutMs?: number;
       onLine?: (line: string) => void;
+      signal?: AbortSignal;
     },
   ): Promise<{
     exitCode: number | null;
@@ -38,6 +39,7 @@ export interface ToolExecutionContext {
   permissions: PermissionManager;
   session: CliSessionState;
   ui: UiRenderer;
+  signal?: AbortSignal;
 }
 
 export interface ToolExecutionResult {

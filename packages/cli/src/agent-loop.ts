@@ -1,5 +1,7 @@
 import type { ToolCallSummary } from "@xpert-cli/contracts";
 import { PermissionManager } from "./permissions/manager.js";
+import { ToolCallGuard } from "./runtime/tool-call-guard.js";
+import { isAbortError, throwIfAborted } from "./runtime/turn-control.js";
 import { pushRecentFile, pushToolSummary } from "./runtime/working-set.js";
 import type { CliSessionState } from "./runtime/session-store.js";
 import { buildToolMessage, type ClientToolMessageInput } from "./sdk/tool-resume.js";
@@ -16,6 +18,7 @@ export async function runAgentTurn(options: {
   config: ResolvedXpertCliConfig;
   session: CliSessionState;
   interactive: boolean;
+  signal?: AbortSignal;
 }): Promise<CliSessionState> {
   const ui = new UiRenderer({ interactive: options.interactive });
   const backend = new HostExecutionBackend(options.session.projectRoot);
@@ -26,6 +29,7 @@ export async function runAgentTurn(options: {
   });
   const sdk = new XpertSdkClient(options.config);
   const registry = createToolRegistry();
+  const toolCallGuard = new ToolCallGuard();
 
   options.session.threadId = await sdk.ensureThread(options.session.threadId);
 
@@ -33,6 +37,8 @@ export async function runAgentTurn(options: {
   let executionId = options.session.runId;
 
   while (true) {
+    throwIfAborted(options.signal);
+
     const state = {
       threadId: options.session.threadId,
       runId: executionId,
@@ -44,6 +50,7 @@ export async function runAgentTurn(options: {
           executionId: executionId ?? failMissingExecutionId(),
           clientTools: registry.clientTools,
           toolMessages: pendingToolMessages,
+          signal: options.signal,
           onRunCreated: ({ runId, threadId }) => {
             if (runId) {
               executionId = runId;
@@ -58,6 +65,7 @@ export async function runAgentTurn(options: {
           prompt: options.prompt,
           threadId: options.session.threadId,
           clientTools: registry.clientTools,
+          signal: options.signal,
           onRunCreated: ({ runId, threadId }) => {
             if (runId) {
               executionId = runId;
@@ -72,6 +80,8 @@ export async function runAgentTurn(options: {
     const toolMessages: ClientToolMessageInput[] = [];
 
     for await (const event of adaptRunStream(request.stream, state)) {
+      throwIfAborted(options.signal);
+
       if (event.type === "text_delta") {
         ui.writeText(event.text);
         continue;
@@ -85,20 +95,49 @@ export async function runAgentTurn(options: {
       if (event.type === "tool_call") {
         const tool = registry.tools.get(event.toolName);
         const args = event.args;
+
+        const guardDecision = toolCallGuard.begin({
+          callId: event.callId,
+          toolName: event.toolName,
+          args,
+        });
+        if (guardDecision.kind === "duplicate") {
+          ui.printLine();
+          ui.printWarning(`reusing cached result for duplicate ${event.toolName} call`);
+          toolMessages.push(guardDecision.message);
+          continue;
+        }
+
         ui.printLine();
         ui.printToolCall(event.toolName, stringifyTarget(args));
 
+        if (guardDecision.kind === "blocked") {
+          const result = toErrorResult(`${guardDecision.reason}. Use the previous result instead.`);
+          const message = buildToolMessage({
+            callId: event.callId,
+            toolName: event.toolName,
+            result,
+            status: "error",
+            interruptId: event.interruptId,
+          });
+          toolCallGuard.remember(event.callId, message);
+          toolMessages.push(message);
+          pushSummary(options.session, event, result, "error");
+          ui.printWarning(result.summary);
+          continue;
+        }
+
         if (!tool) {
           const result = toErrorResult(`Unknown tool: ${event.toolName}`);
-          toolMessages.push(
-            buildToolMessage({
-              callId: event.callId,
-              toolName: event.toolName,
-              result,
-              status: "error",
-              interruptId: event.interruptId,
-            }),
-          );
+          const message = buildToolMessage({
+            callId: event.callId,
+            toolName: event.toolName,
+            result,
+            status: "error",
+            interruptId: event.interruptId,
+          });
+          toolCallGuard.remember(event.callId, message);
+          toolMessages.push(message);
           pushSummary(options.session, event, result, "error");
           continue;
         }
@@ -110,15 +149,15 @@ export async function runAgentTurn(options: {
               ? `Permission denied: ${decision.reason}`
               : "Permission denied",
           );
-          toolMessages.push(
-            buildToolMessage({
-              callId: event.callId,
-              toolName: tool.name,
-              result,
-              status: "error",
-              interruptId: event.interruptId,
-            }),
-          );
+          const message = buildToolMessage({
+            callId: event.callId,
+            toolName: tool.name,
+            result,
+            status: "error",
+            interruptId: event.interruptId,
+          });
+          toolCallGuard.remember(event.callId, message);
+          toolMessages.push(message);
           pushSummary(options.session, event, result, "denied");
           ui.printWarning(`denied ${tool.name}`);
           continue;
@@ -131,34 +170,38 @@ export async function runAgentTurn(options: {
           permissions,
           session: options.session,
           ui,
+          signal: options.signal,
         };
 
         try {
           const result = await tool.execute(args as never, toolContext);
-          toolMessages.push(
-            buildToolMessage({
-              callId: event.callId,
-              toolName: tool.name,
-              result,
-              interruptId: event.interruptId,
-            }),
-          );
+          const message = buildToolMessage({
+            callId: event.callId,
+            toolName: tool.name,
+            result,
+            interruptId: event.interruptId,
+          });
+          toolCallGuard.remember(event.callId, message);
+          toolMessages.push(message);
           pushSummary(options.session, event, result, "success");
           for (const filePath of result.changedFiles ?? []) {
             options.session.recentFiles = pushRecentFile(options.session.recentFiles, filePath);
           }
           ui.printToolAck(tool.name, result.summary);
         } catch (error) {
+          if (isAbortError(error)) {
+            throw error;
+          }
           const result = toErrorResult(error instanceof Error ? error.message : String(error));
-          toolMessages.push(
-            buildToolMessage({
-              callId: event.callId,
-              toolName: tool.name,
-              result,
-              status: "error",
-              interruptId: event.interruptId,
-            }),
-          );
+          const message = buildToolMessage({
+            callId: event.callId,
+            toolName: tool.name,
+            result,
+            status: "error",
+            interruptId: event.interruptId,
+          });
+          toolCallGuard.remember(event.callId, message);
+          toolMessages.push(message);
           pushSummary(options.session, event, result, "error");
           ui.printError(result.summary);
         }
@@ -189,6 +232,7 @@ export async function runAgentTurn(options: {
     }
 
     ui.printLine();
+    throwIfAborted(options.signal);
     options.session.checkpointId = await sdk.getCheckpoint(options.session.threadId);
 
     if (toolMessages.length === 0) {

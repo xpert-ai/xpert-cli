@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import fg from "fast-glob";
 import { createUnifiedDiff } from "../../ui/diff.js";
+import { createAbortError, throwIfAborted } from "../../runtime/turn-control.js";
 import type { ExecutionBackend } from "../contracts.js";
 
 export class HostExecutionBackend implements ExecutionBackend {
@@ -128,8 +129,11 @@ export class HostExecutionBackend implements ExecutionBackend {
       cwd?: string;
       timeoutMs?: number;
       onLine?: (line: string) => void;
+      signal?: AbortSignal;
     },
   ): Promise<{ exitCode: number | null; output: string; timedOut?: boolean }> {
+    throwIfAborted(opts?.signal);
+
     const cwd = opts?.cwd
       ? resolveWorkspacePath(this.#projectRoot, opts.cwd, "read")
       : this.#projectRoot;
@@ -142,6 +146,7 @@ export class HostExecutionBackend implements ExecutionBackend {
 
     const chunks: string[] = [];
     let timedOut = false;
+    let aborted = false;
 
     const push = (line: string) => {
       chunks.push(line);
@@ -158,10 +163,27 @@ export class HostExecutionBackend implements ExecutionBackend {
       setTimeout(() => child.kill("SIGKILL"), 1000).unref();
     }, timeoutMs);
 
+    const abortChild = () => {
+      aborted = true;
+      child.kill("SIGTERM");
+      setTimeout(() => child.kill("SIGKILL"), 1000).unref();
+    };
+
+    opts?.signal?.addEventListener("abort", abortChild, { once: true });
+
     const exitCode = await new Promise<number | null>((resolve, reject) => {
       child.on("error", reject);
       child.on("close", (code) => resolve(code));
-    }).finally(() => clearTimeout(timer));
+    }).finally(() => {
+      clearTimeout(timer);
+      opts?.signal?.removeEventListener("abort", abortChild);
+    });
+
+    if (aborted) {
+      throw opts?.signal?.reason instanceof Error
+        ? opts.signal.reason
+        : createAbortError();
+    }
 
     return {
       exitCode,

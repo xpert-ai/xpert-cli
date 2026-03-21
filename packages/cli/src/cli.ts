@@ -6,6 +6,7 @@ import { loadResolvedConfig } from "./context/config-loader.js";
 import { resolveCwd, resolveProjectRoot } from "./runtime/project-root.js";
 import { runRepl } from "./repl.js";
 import { runAgentTurn } from "./agent-loop.js";
+import { runInterruptibleTurn, TurnCancelledError } from "./runtime/turn-control.js";
 import { UiRenderer } from "./ui/renderer.js";
 
 interface GlobalOptions {
@@ -53,13 +54,32 @@ async function runMain(options: GlobalOptions): Promise<void> {
   const { config, sessionStore, session } = await prepareRuntime(options);
 
   if (options.prompt) {
-    const nextSession = await runAgentTurn({
-      prompt: options.prompt,
-      config,
-      session,
-      interactive: process.stdout.isTTY,
-    });
-    await sessionStore.save(nextSession);
+    const ui = new UiRenderer();
+    try {
+      const nextSession = await runInterruptibleTurn(
+        (signal) =>
+          runAgentTurn({
+            prompt: options.prompt!,
+            config,
+            session,
+            interactive: process.stdout.isTTY,
+            signal,
+          }),
+        {
+          onCancel: () => {
+            ui.printLine();
+            ui.printWarning("cancelled current turn");
+          },
+        },
+      );
+      await sessionStore.save(nextSession);
+    } catch (error) {
+      if (error instanceof TurnCancelledError) {
+        process.exitCode = 130;
+        return;
+      }
+      throw error;
+    }
     return;
   }
 

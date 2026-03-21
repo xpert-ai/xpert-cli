@@ -15,10 +15,13 @@ Local-first terminal coding agent MVP for the `xpert` platform.
   - `Grep`
   - `Patch`
   - `Bash`
-  - `GitStatus`
-  - `GitDiff`
+- `GitStatus`
+- `GitDiff`
 - Local session persistence in `~/.xpert-cli/sessions`
 - Safe / moderate / dangerous permission checks
+- Local host execution by default, not server-side sandbox execution
+- Duplicate tool-call reuse and repeated-call guard inside one turn
+- `Ctrl+C` cancels the current turn and returns to `xpert>` in interactive mode
 
 ## Install
 
@@ -72,27 +75,35 @@ pnpm --dir xpert-cli --filter @xpert-cli/cli dev
 Or after build:
 
 ```bash
-./packages/cli/dist/index.js
+node packages/cli/dist/index.js
 ```
 
 Single prompt:
 
 ```bash
-./packages/cli/dist/index.js -p "Read src/index.ts and summarize it"
+node packages/cli/dist/index.js -p "Read src/index.ts and summarize it"
 ```
 
 Resume latest session:
 
 ```bash
-./packages/cli/dist/index.js resume
+node packages/cli/dist/index.js resume
 ```
 
 Health checks:
 
 ```bash
-./packages/cli/dist/index.js doctor
-./packages/cli/dist/index.js auth status
+node packages/cli/dist/index.js doctor
+node packages/cli/dist/index.js auth status
 ```
+
+Cancel a stuck turn in interactive mode:
+
+```text
+Press Ctrl+C once
+```
+
+This cancels the current run or local tool execution and drops back to `xpert>`.
 
 ## Demo Flow
 
@@ -102,19 +113,19 @@ Health checks:
 4. Run:
 
 ```bash
-./packages/cli/dist/index.js -p "Read package.json and summarize it"
+node packages/cli/dist/index.js -p "Read package.json and summarize it"
 ```
 
 5. Run:
 
 ```bash
-./packages/cli/dist/index.js -p "Search for TODO and show me where it appears"
+node packages/cli/dist/index.js -p "Search for TODO and show me where it appears"
 ```
 
 6. Run:
 
 ```bash
-./packages/cli/dist/index.js -p "Change the greeting string in src/demo.ts to Hello from xpert-cli"
+node packages/cli/dist/index.js -p "Change the greeting string in src/demo.ts to Hello from xpert-cli"
 ```
 
 The CLI should show streamed text, local tool execution, patch diff, and store the session locally.
@@ -132,6 +143,8 @@ Covered areas:
 - session store persistence
 - stream interrupt to tool-call adaptation
 - host patch execution
+- duplicate tool-call guard
+- turn cancellation wiring
 
 ## Known Limits
 
@@ -139,4 +152,5 @@ Covered areas:
 - API key auth only.
 - Dynamic local tools depend on the accompanying `xpert-pro` patch.
 - `Patch` only supports exact string replacement.
+- Repeated-call protection is per turn, not global across all future sessions.
 - No heavy TUI, no MCP, no repo map, no plugin ecosystem in this MVP.

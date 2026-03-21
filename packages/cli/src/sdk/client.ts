@@ -7,6 +7,7 @@ export interface StreamRunRequest {
   prompt: string;
   threadId?: string;
   clientTools: ClientToolContextDescriptor[];
+  signal?: AbortSignal;
   onRunCreated?: (params: { runId?: string; threadId?: string }) => void;
 }
 
@@ -15,6 +16,7 @@ export interface ResumeRunRequest {
   executionId: string;
   clientTools: ClientToolContextDescriptor[];
   toolMessages: ClientToolMessageInput[];
+  signal?: AbortSignal;
   onRunCreated?: (params: { runId?: string; threadId?: string }) => void;
 }
 
@@ -76,6 +78,7 @@ export class XpertSdkClient {
           sandboxMode: this.#config.sandboxMode,
         },
       },
+      signal: request.signal,
       onRunCreated: request.onRunCreated,
     });
 
@@ -102,6 +105,7 @@ export class XpertSdkClient {
           sandboxMode: this.#config.sandboxMode,
         },
       },
+      signal: request.signal,
       onRunCreated: request.onRunCreated,
     });
 
@@ -139,6 +143,7 @@ export class XpertSdkClient {
     assistantId: string;
     input: Record<string, unknown>;
     context: Record<string, unknown>;
+    signal?: AbortSignal;
     onRunCreated?: (params: { runId?: string; threadId?: string }) => void;
   }): Promise<AsyncIterable<{ event?: string; data: unknown }>> {
     const response = await fetch(
@@ -146,6 +151,7 @@ export class XpertSdkClient {
       {
         method: "POST",
         headers: this.buildHeaders(),
+        signal: params.signal,
         body: JSON.stringify({
           assistant_id: params.assistantId,
           input: params.input,

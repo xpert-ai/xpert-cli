@@ -37,4 +37,21 @@ describe("HostExecutionBackend", () => {
       "const demo = 2;",
     );
   });
+
+  it("aborts a running shell command when the turn is cancelled", async () => {
+    const backend = new HostExecutionBackend(tempDir);
+    const controller = new AbortController();
+
+    const command = `${process.execPath} -e "setTimeout(() => {}, 5000)"`;
+    const execution = backend.exec(command, {
+      signal: controller.signal,
+      timeoutMs: 10_000,
+    });
+
+    setTimeout(() => controller.abort(), 50);
+
+    await expect(execution).rejects.toMatchObject({
+      name: "AbortError",
+    });
+  });
 });
