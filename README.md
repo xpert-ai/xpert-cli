@@ -33,6 +33,14 @@ Local-first terminal coding agent MVP for the `xpert` platform.
 
 ## Install
 
+From npm:
+
+```bash
+npm install -g @xpert-ai/xpert-cli
+```
+
+From source:
+
 ```bash
 cd xpert-cli
 pnpm install
@@ -77,7 +85,7 @@ Optional user config:
 Interactive:
 
 ```bash
-pnpm --dir xpert-cli --filter @xpert-cli/cli dev
+pnpm --dir xpert-cli --filter @xpert-ai/xpert-cli dev
 ```
 
 Or after build:
@@ -163,6 +171,28 @@ Covered areas:
 - duplicate tool-call guard
 - turn cancellation wiring
 - local context truncation and request injection
+
+## Publish
+
+The public npm package name is `@xpert-ai/xpert-cli`.
+
+- Only `packages/cli` is published. The workspace root remains private.
+- GitHub Actions publishes on tag push `cli-v<version>` or manual `workflow_dispatch`.
+- The tag version must match `packages/cli/package.json`.
+- Add `NPM_TOKEN` to the GitHub repository secrets before publishing.
+
+Local pre-publish verification:
+
+```bash
+pnpm test
+pnpm build
+cd packages/cli
+npm pack --dry-run
+npm pack
+TMP_DIR="$(mktemp -d)"
+npm install --prefix "$TMP_DIR" -g ./xpert-ai-xpert-cli-$(node -p "require('./package.json').version").tgz
+"$TMP_DIR/bin/xpert" --help
+```
 
 ## Known Limits
 

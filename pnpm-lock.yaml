@@ -35,9 +35,6 @@ importers:
       '@xpert-ai/xpert-sdk':
         specifier: 0.0.3
         version: 0.0.3
-      '@xpert-cli/contracts':
-        specifier: workspace:*
-        version: link:../contracts
       commander:
         specifier: ^13.1.0
         version: 13.1.0
@@ -56,6 +53,10 @@ importers:
       zod:
         specifier: ^3.24.2
         version: 3.25.76
+    devDependencies:
+      '@xpert-cli/contracts':
+        specifier: workspace:*
+        version: link:../contracts
 
   packages/contracts: {}
 
