@@ -1,0 +1,27 @@
+{
+  "name": "@xpert-cli/cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "xpert": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --dts --format esm --clean",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@xpert-ai/xpert-sdk": "0.0.3",
+    "@xpert-cli/contracts": "workspace:*",
+    "commander": "^13.1.0",
+    "diff": "^7.0.0",
+    "fast-glob": "^3.3.3",
+    "picocolors": "^1.1.1",
+    "prompts": "^2.4.2",
+    "zod": "^3.24.2"
+  }
+}
