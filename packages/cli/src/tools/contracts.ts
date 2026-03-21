@@ -3,6 +3,59 @@ import type { PermissionManager } from "../permissions/manager.js";
 import type { CliSessionState } from "../runtime/session-store.js";
 import type { UiRenderer } from "../ui/renderer.js";
 
+export interface WriteFileArgs {
+  path: string;
+  content: string;
+}
+
+export interface WriteFileResult {
+  path: string;
+  diff: string;
+}
+
+export interface PatchReplaceEdit {
+  kind?: "replace";
+  oldString: string;
+  newString: string;
+  replaceAll?: boolean;
+}
+
+export interface PatchRangeEdit {
+  kind: "range";
+  startLine: number;
+  endLine: number;
+  newContent: string;
+}
+
+export type PatchEdit = PatchReplaceEdit | PatchRangeEdit;
+
+export interface PatchReplaceFileArgs extends PatchReplaceEdit {
+  path: string;
+}
+
+export interface PatchRangeFileArgs extends PatchRangeEdit {
+  path: string;
+}
+
+export interface PatchMultiFileArgs {
+  kind: "multi";
+  path: string;
+  edits: PatchEdit[];
+}
+
+export type PatchFileArgs =
+  | PatchReplaceFileArgs
+  | PatchRangeFileArgs
+  | PatchMultiFileArgs;
+
+export interface PatchFileResult {
+  path: string;
+  diff: string;
+  mode: "replace" | "range" | "multi";
+  occurrences: number;
+  appliedEdits: number;
+}
+
 export interface ExecutionBackend {
   mode: "host" | "docker" | "remote-sandbox";
   readFile(
@@ -11,12 +64,8 @@ export interface ExecutionBackend {
   ): Promise<string>;
   glob(pattern: string, searchPath?: string): Promise<string[]>;
   grep(pattern: string, searchPath?: string, glob?: string): Promise<string>;
-  patchFile(args: {
-    path: string;
-    oldString: string;
-    newString: string;
-    replaceAll?: boolean;
-  }): Promise<{ path: string; diff: string; occurrences: number }>;
+  writeFile(args: WriteFileArgs): Promise<WriteFileResult>;
+  patchFile(args: PatchFileArgs): Promise<PatchFileResult>;
   exec(
     command: string,
     opts?: {

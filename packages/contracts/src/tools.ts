@@ -4,6 +4,7 @@ export type ToolName =
   | "Read"
   | "Glob"
   | "Grep"
+  | "Write"
   | "Patch"
   | "Bash"
   | "GitStatus"

@@ -13,6 +13,7 @@ export function resolveRiskLevel(toolName: string, args: unknown): {
     case "GitStatus":
     case "GitDiff":
       return { riskLevel: "safe" };
+    case "Write":
     case "Patch":
       return {
         riskLevel: "moderate",

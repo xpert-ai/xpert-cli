@@ -5,12 +5,14 @@ import { globTool } from "./glob.js";
 import { grepTool } from "./grep.js";
 import { patchTool } from "./patch.js";
 import { readTool } from "./read.js";
+import { writeTool } from "./write.js";
 
 export function createToolRegistry(): ToolRegistry {
   const tools = [
     readTool,
     globTool,
     grepTool,
+    writeTool,
     patchTool,
     bashTool,
     gitStatusTool,
