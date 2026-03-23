@@ -4,7 +4,7 @@ export const MAX_CONSECUTIVE_IDENTICAL_TOOL_CALLS = 2;
 
 export type ToolCallGuardDecision =
   | { kind: "execute" }
-  | { kind: "duplicate"; message: ClientToolMessageInput }
+  | { kind: "already_handled" }
   | { kind: "blocked"; reason: string };
 
 export class ToolCallGuard {
@@ -16,8 +16,7 @@ export class ToolCallGuard {
     const cachedMessage = this.#messagesByCallId.get(call.callId);
     if (cachedMessage) {
       return {
-        kind: "duplicate",
-        message: cachedMessage,
+        kind: "already_handled",
       };
     }
 

@@ -67,7 +67,7 @@ export const patchTool: ToolDefinition<PatchFileArgs> = {
   },
   async execute(args, context) {
     const result = await context.backend.patchFile(args);
-    context.ui.printDiff(result.diff);
+    context.ui.showDiff(result.diff);
     return {
       summary: `${result.path} ${summarizeDiff(result.diff)}`,
       content: describePatchResult(result),

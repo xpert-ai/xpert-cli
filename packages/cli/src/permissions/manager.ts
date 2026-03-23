@@ -9,7 +9,10 @@ import {
   matchesPermissionRecord,
   resolvePermissionScope,
 } from "./rules.js";
-import { promptForPermission } from "../ui/permission.js";
+import {
+  promptForPermission,
+  type PermissionPromptHandler,
+} from "../ui/permission.js";
 
 export interface PermissionDecision {
   allowed: boolean;
@@ -34,22 +37,29 @@ export class PermissionManager {
   readonly #session: CliSessionState;
   readonly #approvalMode: ApprovalMode;
   readonly #interactive: boolean;
+  readonly #promptForPermission: PermissionPromptHandler;
 
   constructor(options: {
     session: CliSessionState;
     approvalMode: ApprovalMode;
     interactive: boolean;
+    promptForPermission?: PermissionPromptHandler;
   }) {
     this.#session = options.session;
     this.#approvalMode = options.approvalMode;
     this.#interactive = options.interactive;
+    this.#promptForPermission = options.promptForPermission ?? promptForPermission;
   }
 
   get records(): PermissionRecord[] {
     return this.#session.approvals;
   }
 
-  async request(toolName: string, args: unknown): Promise<PermissionDecision> {
+  async request(
+    toolName: string,
+    args: unknown,
+    options?: { signal?: AbortSignal },
+  ): Promise<PermissionDecision> {
     const scope = resolvePermissionScope(toolName, args, {
       projectRoot: this.#session.projectRoot,
       defaultCwd: this.#session.cwd,
@@ -103,7 +113,8 @@ export class PermissionManager {
       };
     }
 
-    const result = await promptForPermission({
+    const result = await this.#promptForPermission(
+      {
       toolName,
       riskLevel: scope.riskLevel,
       reason: scope.reason,
@@ -111,7 +122,9 @@ export class PermissionManager {
       scope: scope.summary,
       canRememberAllow: scope.canRememberAllow,
       canRememberDeny: scope.canRememberDeny,
-    });
+      },
+      options?.signal,
+    );
 
     if (result.outcome === "allow_session" && scope.canRememberAllow) {
       this.#session.approvals.push(createPermissionRecord(scope, "allow"));

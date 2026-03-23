@@ -4,7 +4,7 @@ import { writeTool } from "../tools/write.js";
 
 describe("writeTool", () => {
   it("prints the diff and records the created file", async () => {
-    const printDiff = vi.fn();
+    const showDiff = vi.fn();
     const writeFile = vi.fn().mockResolvedValue({
       path: "src/new-file.ts",
       diff: "--- src/new-file.ts\n+++ src/new-file.ts\n+export const created = true;\n",
@@ -12,7 +12,7 @@ describe("writeTool", () => {
 
     const context = {
       backend: { writeFile },
-      ui: { printDiff },
+      ui: { showDiff },
     } as unknown as ToolExecutionContext;
 
     const result = await writeTool.execute(
@@ -27,7 +27,7 @@ describe("writeTool", () => {
       path: "src/new-file.ts",
       content: "export const created = true;\n",
     });
-    expect(printDiff).toHaveBeenCalledWith(expect.stringContaining("+export const created = true;"));
+    expect(showDiff).toHaveBeenCalledWith(expect.stringContaining("+export const created = true;"));
     expect(result.changedFiles).toEqual(["src/new-file.ts"]);
     expect(result.summary).toContain("src/new-file.ts");
   });

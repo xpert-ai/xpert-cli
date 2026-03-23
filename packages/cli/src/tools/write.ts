@@ -21,7 +21,7 @@ export const writeTool: ToolDefinition<{
   },
   async execute(args, context) {
     const result = await context.backend.writeFile(args);
-    context.ui.printDiff(result.diff);
+    context.ui.showDiff(result.diff);
     return {
       summary: `${result.path} ${summarizeDiff(result.diff)}`,
       content: `Created ${result.path}.`,

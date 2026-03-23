@@ -7,35 +7,55 @@ export type PermissionPromptResult =
   | { outcome: "deny" }
   | { outcome: "deny_session" };
 
+export interface PermissionPromptChoice {
+  title: string;
+  outcome: PermissionPromptResult["outcome"];
+}
+
+export type PermissionPromptHandler = (
+  request: PermissionRequest,
+  signal?: AbortSignal,
+) => Promise<PermissionPromptResult>;
+
 export async function promptForPermission(
   request: PermissionRequest,
+  _signal?: AbortSignal,
 ): Promise<PermissionPromptResult> {
-  const choices = [
-    { title: "Allow once", value: "allow_once" as const },
-    ...(request.canRememberAllow
-      ? [{ title: "Allow for session", value: "allow_session" as const }]
-      : []),
-    {
-      title: request.canRememberDeny ? "Deny once" : "Deny",
-      value: "deny" as const,
-    },
-    ...(request.canRememberDeny
-      ? [{ title: "Deny for session", value: "deny_session" as const }]
-      : []),
-  ];
+  const choices = buildPermissionPromptChoices(request);
 
   const response = await prompts({
     type: "select",
     name: "outcome",
-    message: buildMessage(request),
-    choices,
+    message: buildPermissionMessage(request),
+    choices: choices.map((choice) => ({
+      title: choice.title,
+      value: choice.outcome,
+    })),
     initial: request.riskLevel === "dangerous" ? Math.min(choices.length - 1, 1) : 0,
   });
 
   return { outcome: response.outcome ?? "deny" };
 }
 
-function buildMessage(request: PermissionRequest): string {
+export function buildPermissionPromptChoices(
+  request: PermissionRequest,
+): PermissionPromptChoice[] {
+  return [
+    { title: "Allow once", outcome: "allow_once" },
+    ...(request.canRememberAllow
+      ? [{ title: "Allow for session", outcome: "allow_session" as const }]
+      : []),
+    {
+      title: request.canRememberDeny ? "Deny once" : "Deny",
+      outcome: "deny",
+    },
+    ...(request.canRememberDeny
+      ? [{ title: "Deny for session", outcome: "deny_session" as const }]
+      : []),
+  ];
+}
+
+export function buildPermissionMessage(request: PermissionRequest): string {
   const parts = [`${request.toolName} wants to run`];
   if (request.target) {
     parts.push(`on ${request.target}`);

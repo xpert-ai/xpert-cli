@@ -1,4 +1,5 @@
 import type { ToolCallSummary } from "@xpert-cli/contracts";
+import type { ResolvedXpertCliConfig } from "@xpert-cli/contracts";
 import { PermissionManager } from "./permissions/manager.js";
 import { buildRunLocalContext } from "./context/run-context.js";
 import { ToolCallGuard } from "./runtime/tool-call-guard.js";
@@ -23,9 +24,14 @@ import { adaptRunStream } from "./sdk/run-stream.js";
 import { XpertSdkClient } from "./sdk/client.js";
 import { createToolRegistry } from "./tools/registry.js";
 import { HostExecutionBackend } from "./tools/backends/host.js";
-import type { ToolExecutionContext, ToolExecutionResult } from "./tools/contracts.js";
-import { UiRenderer } from "./ui/renderer.js";
-import type { ResolvedXpertCliConfig } from "@xpert-cli/contracts";
+import type {
+  ToolExecutionContext,
+  ToolExecutionResult,
+  ToolRegistry,
+} from "./tools/contracts.js";
+import type { UiSink } from "./ui/sink.js";
+import { TextUiRenderer } from "./ui/text-renderer.js";
+import type { PermissionPromptHandler } from "./ui/permission.js";
 
 export async function runAgentTurn(options: {
   prompt: string;
@@ -33,16 +39,20 @@ export async function runAgentTurn(options: {
   session: CliSessionState;
   interactive: boolean;
   signal?: AbortSignal;
+  ui?: UiSink;
+  toolRegistry?: ToolRegistry;
+  promptForPermission?: PermissionPromptHandler;
 }): Promise<CliSessionState> {
-  const ui = new UiRenderer({ interactive: options.interactive });
+  const ui = options.ui ?? new TextUiRenderer({ interactive: options.interactive });
   const backend = new HostExecutionBackend(options.session.projectRoot);
   const permissions = new PermissionManager({
     session: options.session,
     approvalMode: options.config.approvalMode,
     interactive: ui.interactive,
+    promptForPermission: options.promptForPermission,
   });
   const sdk = new XpertSdkClient(options.config);
-  const registry = createToolRegistry();
+  const registry = options.toolRegistry ?? createToolRegistry();
   const toolCallGuard = new ToolCallGuard();
   const toolBudget = new ToolCallBudget();
   const transcript = new TurnTranscriptRecorder({
@@ -144,13 +154,13 @@ export async function runAgentTurn(options: {
         throwIfAborted(options.signal);
 
         if (event.type === "text_delta") {
-          ui.writeText(event.text);
+          ui.appendAssistantText(event.text);
           transcript.appendAssistantText(event.text);
           continue;
         }
 
         if (event.type === "reasoning") {
-          ui.printReasoning(event.text);
+          ui.showReasoning(event.text);
           continue;
         }
 
@@ -164,23 +174,12 @@ export async function runAgentTurn(options: {
             toolName: event.toolName,
             args,
           });
-          if (guardDecision.kind === "duplicate") {
-            ui.printLine();
-            ui.printWarning(`reusing cached result for duplicate ${event.toolName} call`);
-            toolMessages.push(guardDecision.message);
-            transcript.recordToolEvent({
-              callId: event.callId,
-              toolName: event.toolName,
-              argsSummary,
-              resultSummary: "reused cached result",
-              status: guardDecision.message.status === "error" ? "error" : "success",
-              code: "DUPLICATE_TOOL_CALL_REUSED",
-            });
+          if (guardDecision.kind === "already_handled") {
             continue;
           }
 
-          ui.printLine();
-          ui.printToolCall(event.toolName, stringifyTarget(args));
+          ui.lineBreak();
+          ui.showToolCall(event.toolName, stringifyTarget(args));
 
           if (guardDecision.kind === "blocked") {
             const result = toToolErrorResult({
@@ -205,7 +204,7 @@ export async function runAgentTurn(options: {
               status: "error",
               code: "REPEATED_TOOL_CALL_BLOCKED",
             });
-            ui.printWarning(result.summary);
+            ui.showWarning(result.summary);
             continue;
           }
 
@@ -230,7 +229,7 @@ export async function runAgentTurn(options: {
               status: "error",
               code: "TOOL_CALL_BUDGET_EXCEEDED",
             });
-            ui.printWarning(result.summary);
+            ui.showWarning(result.summary);
             continue;
           }
 
@@ -283,12 +282,14 @@ export async function runAgentTurn(options: {
               status: "error",
               code: validation.error.code,
             });
-            ui.printWarning(result.summary);
+            ui.showWarning(result.summary);
             continue;
           }
 
           const validatedArgs = validation.value;
-          const decision = await permissions.request(tool.name, validatedArgs);
+          const decision = await permissions.request(tool.name, validatedArgs, {
+            signal: options.signal,
+          });
           transcript.recordPermissionEvent({
             toolName: tool.name,
             riskLevel: decision.riskLevel,
@@ -328,7 +329,7 @@ export async function runAgentTurn(options: {
               status: "denied",
               code: "PERMISSION_DENIED",
             });
-            ui.printWarning(`denied ${tool.name}`);
+            ui.showWarning(`denied ${tool.name}`);
             continue;
           }
 
@@ -364,7 +365,7 @@ export async function runAgentTurn(options: {
             for (const filePath of result.changedFiles ?? []) {
               options.session.recentFiles = pushRecentFile(options.session.recentFiles, filePath);
             }
-            ui.printToolAck(tool.name, result.summary);
+            ui.showToolAck(tool.name, result.summary);
           } catch (error) {
             if (isAbortError(error)) {
               throw error;
@@ -391,7 +392,7 @@ export async function runAgentTurn(options: {
               status: "error",
               code: "TOOL_EXECUTION_ERROR",
             });
-            ui.printError(result.summary);
+            ui.showError(result.summary);
           }
 
           continue;
@@ -412,7 +413,7 @@ export async function runAgentTurn(options: {
         }
 
         if (event.type === "error") {
-          ui.printError(event.message);
+          ui.showError(event.message);
           throw new Error(event.message);
         }
 
@@ -428,7 +429,7 @@ export async function runAgentTurn(options: {
         }
       }
 
-      ui.printLine();
+      ui.lineBreak();
       throwIfAborted(options.signal);
       options.session.checkpointId = await sdk.getCheckpoint(options.session.threadId);
       transcript.setIdentifiers({ checkpointId: options.session.checkpointId });
