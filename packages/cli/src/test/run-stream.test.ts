@@ -132,4 +132,61 @@ describe("adaptRunStream", () => {
       },
     ]);
   });
+
+  it("extracts tool calls from tool component start messages", async () => {
+    async function* fakeStream() {
+      yield {
+        event: "message",
+        data: {
+          type: "event",
+          event: "on_message_start",
+          data: {
+            executionId: "run-456",
+          },
+        },
+      };
+      yield {
+        event: "message",
+        data: {
+          type: "message",
+          data: {
+            id: "call-7",
+            type: "component",
+            data: {
+              category: "Tool",
+              tool: "Bash",
+              status: "running",
+              input: {
+                command: "pwd",
+              },
+            },
+          },
+        },
+      };
+      yield {
+        event: "complete",
+        data: { type: "complete" },
+      };
+    }
+
+    const events = [];
+    for await (const event of adaptRunStream(fakeStream(), {})) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      {
+        type: "tool_call",
+        toolName: "Bash",
+        callId: "call-7",
+        args: { command: "pwd" },
+        runId: "run-456",
+      },
+      {
+        type: "done",
+        runId: "run-456",
+        threadId: undefined,
+      },
+    ]);
+  });
 });

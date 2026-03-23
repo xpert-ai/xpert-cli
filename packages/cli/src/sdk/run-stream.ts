@@ -66,6 +66,18 @@ function* normalizePayload(
       return;
     }
     if (isRecord(message)) {
+      const toolComponentCall = readToolComponentCall(message);
+      if (toolComponentCall) {
+        yield {
+          type: "tool_call",
+          toolName: toolComponentCall.toolName,
+          callId: toolComponentCall.callId,
+          args: toolComponentCall.args,
+          runId: state.runId,
+        };
+        return;
+      }
+
       if (message.type === "text" && typeof message.text === "string") {
         yield { type: "text_delta", text: message.text };
         return;
@@ -204,6 +216,36 @@ function asToolCallArray(value: unknown): Array<Record<string, unknown>> | null 
   }
 
   return value.filter((item): item is Record<string, unknown> => isRecord(item));
+}
+
+function readToolComponentCall(message: Record<string, unknown>): {
+  callId: string;
+  toolName: string;
+  args: unknown;
+} | null {
+  if (readString(message.type)?.toLowerCase() !== "component") {
+    return null;
+  }
+
+  const callId = readString(message.id);
+  const component = isRecord(message.data) ? message.data : null;
+  if (!callId || !component) {
+    return null;
+  }
+
+  const category = readString(component.category)?.toLowerCase();
+  const status = readString(component.status)?.toLowerCase();
+  const toolName = readString(component.tool);
+
+  if (category !== "tool" || status !== "running" || !toolName) {
+    return null;
+  }
+
+  return {
+    callId,
+    toolName,
+    args: component.input,
+  };
 }
 
 function isCompletePayload(payload: unknown): boolean {
