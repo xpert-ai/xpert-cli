@@ -35,6 +35,11 @@ Local-first terminal coding agent MVP for the `xpert` platform.
   - `git status --short`
   - recent tool-call summaries
   - recent changed files
+- Request diagnostics for common backend failures:
+  - service unreachable / DNS / timeout / connection refused
+  - auth failure (`401` / `403`)
+  - wrong `XPERT_API_URL`, missing route, or protocol mismatch
+  - SSE connect failure, mid-run stream interruption, and resume failure
 
 ## Install
 
@@ -197,6 +202,7 @@ Covered areas:
 - duplicate tool-call guard
 - turn cancellation wiring
 - local context truncation and request injection
+- request error normalization for service, auth, URL/protocol, stream, and resume failures
 
 ## Publish
 

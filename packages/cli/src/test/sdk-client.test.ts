@@ -2,6 +2,7 @@ import type { ResolvedXpertCliConfig } from "@xpert-cli/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RunLocalContext } from "../context/run-context.js";
 import { XpertSdkClient } from "../sdk/client.js";
+import { formatCliError, XpertCliRequestError } from "../sdk/request-errors.js";
 
 describe("XpertSdkClient local context injection", () => {
   const fetchMock = vi.fn<typeof fetch>();
@@ -75,6 +76,201 @@ describe("XpertSdkClient local context injection", () => {
     expect(toolMessages[0]?.content).toContain("Tool result:\n1 | hello");
     expect(toolMessages[1]?.content).toBe("src/index.ts");
   });
+
+  it("normalizes connection failures for streamPrompt", async () => {
+    const client = new XpertSdkClient(createConfig());
+    fetchMock.mockRejectedValueOnce(
+      withCause(
+        new TypeError("fetch failed"),
+        Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:3000"), {
+          code: "ECONNREFUSED",
+        }),
+      ),
+    );
+
+    await expect(
+      client.streamPrompt({
+        prompt: "Ping the backend.",
+        threadId: "thread-1",
+        clientTools: [],
+        localContext: createLocalContext(),
+      }),
+    ).rejects.toMatchObject({
+      kind: "service_unavailable",
+      message: "cannot reach xpert-pro at http://localhost:3000/api/ai",
+    });
+  });
+
+  it("normalizes auth failures from non-2xx run-stream responses", async () => {
+    const client = new XpertSdkClient(createConfig());
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ message: "Unauthorized" }), {
+        status: 401,
+        headers: {
+          "content-type": "application/json",
+        },
+      }),
+    );
+
+    await expect(
+      client.streamPrompt({
+        prompt: "Ping the backend.",
+        threadId: "thread-1",
+        clientTools: [],
+        localContext: createLocalContext(),
+      }),
+    ).rejects.toMatchObject({
+      kind: "auth_failed",
+    });
+  });
+
+  it("normalizes route mismatches from non-2xx run-stream responses", async () => {
+    const client = new XpertSdkClient(createConfig());
+    fetchMock.mockResolvedValueOnce(
+      new Response("Cannot POST /api/ai/threads/thread-1/runs/stream", {
+        status: 404,
+        headers: {
+          "content-type": "text/plain",
+        },
+      }),
+    );
+
+    await expect(
+      client.streamPrompt({
+        prompt: "Ping the backend.",
+        threadId: "thread-1",
+        clientTools: [],
+        localContext: createLocalContext(),
+      }),
+    ).rejects.toMatchObject({
+      kind: "not_found",
+    });
+  });
+
+  it("distinguishes SSE connect failure from stream interruption", async () => {
+    const client = new XpertSdkClient(createConfig());
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.error(new Error("socket hang up"));
+            },
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              const encoder = new TextEncoder();
+              controller.enqueue(
+                encoder.encode('event: message\ndata: {"type":"message","data":{"type":"text","text":"partial"}}\n\n'),
+              );
+              setTimeout(() => {
+                controller.error(new Error("socket hang up"));
+              }, 0);
+            },
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "text/event-stream",
+            },
+          },
+        ),
+      );
+
+    const connect = await client.streamPrompt({
+      prompt: "Ping the backend.",
+      threadId: "thread-1",
+      clientTools: [],
+      localContext: createLocalContext(),
+    });
+    await expect(readAll(connect.stream)).rejects.toMatchObject({
+      kind: "stream_connect_failed",
+    });
+
+    const interrupted = await client.streamPrompt({
+      prompt: "Ping the backend again.",
+      threadId: "thread-1",
+      clientTools: [],
+      localContext: createLocalContext(),
+    });
+    await expect(readAll(interrupted.stream)).rejects.toMatchObject({
+      kind: "stream_interrupted",
+    });
+  });
+
+  it("uses resume-specific wording when the resume stream breaks", async () => {
+    const client = new XpertSdkClient(createConfig());
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            const encoder = new TextEncoder();
+            controller.enqueue(
+              encoder.encode('event: message\ndata: {"type":"message","data":{"type":"text","text":"partial"}}\n\n'),
+            );
+            setTimeout(() => {
+              controller.error(new Error("socket hang up"));
+            }, 0);
+          },
+        }),
+        {
+          status: 200,
+          headers: {
+            "content-type": "text/event-stream",
+          },
+        },
+      ),
+    );
+
+    const response = await client.resumeWithToolMessages({
+      threadId: "thread-1",
+      executionId: "run-1",
+      clientTools: [],
+      localContext: createLocalContext(),
+      toolMessages: [
+        {
+          tool_call_id: "call-1",
+          name: "Read",
+          content: "ok",
+        },
+      ],
+    });
+
+    await expect(readAll(response.stream)).rejects.toSatisfy((error: unknown) => {
+      expect(error).toBeInstanceOf(XpertCliRequestError);
+      expect((error as XpertCliRequestError).kind).toBe("resume_failed");
+      expect(formatCliError(error)).toContain(
+        "error: tool results could not be resumed to the current run",
+      );
+      return true;
+    });
+  });
+
+  it("normalizes checkpoint failures from the shared sdk client", async () => {
+    const client = new XpertSdkClient(createConfig());
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ message: "Forbidden" }), {
+        status: 403,
+        headers: {
+          "content-type": "application/json",
+        },
+      }),
+    );
+
+    await expect(client.getCheckpoint("thread-1")).rejects.toMatchObject({
+      kind: "auth_failed",
+    });
+  });
 });
 
 function parseRequestBody(fetchMock: ReturnType<typeof vi.fn>) {
@@ -130,4 +326,19 @@ function createLocalContext(): RunLocalContext {
       ],
     },
   };
+}
+
+async function readAll(stream: AsyncIterable<{ event?: string; data: unknown }>): Promise<void> {
+  for await (const _chunk of stream) {
+    //
+  }
+}
+
+function withCause<T extends Error>(error: T, cause: unknown): T {
+  Object.defineProperty(error, "cause", {
+    configurable: true,
+    enumerable: false,
+    value: cause,
+  });
+  return error;
 }

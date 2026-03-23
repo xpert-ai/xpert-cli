@@ -30,6 +30,7 @@
 11. Interactive Ink mode keeps command results and local slash-command views in the history stream while rendering the active turn separately as pending state.
 12. Interactive mode can cancel the current turn with `Ctrl+C` without exiting the whole REPL.
 13. After each turn, it refreshes checkpoint state and persists session metadata locally.
+14. CLI request failures are normalized in the local SDK layer so both Ink and text mode show short diagnostics with target URL and next-step hints for service, auth, URL/protocol, stream, and resume failures.
 
 ## Local Backend
 
@@ -47,6 +48,12 @@
 
 This CLI expects `xpert-pro` to support dynamic client tools from run `context.clientTools`.
 That support is added in the accompanying minimal `xpert-pro` patch in this workspace.
+
+## Request Failure Diagnostics
+
+- `ensureThread`, `runs/stream`, tool-result resume, and checkpoint fetch failures are normalized inside `xpert-cli`.
+- The CLI distinguishes service unreachable, auth failure, missing route, protocol mismatch, SSE connect failure, mid-run stream interruption, and resume failure.
+- User-visible output stays short and actionable, typically including `XPERT_API_URL`, a concise detail line, and hints such as `xpert doctor` or `xpert auth status`.
 
 ## Limits
 

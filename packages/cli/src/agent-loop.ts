@@ -27,6 +27,10 @@ import type { CliSessionState } from "./runtime/session-store.js";
 import { buildToolMessage, type ClientToolMessageInput } from "./sdk/tool-resume.js";
 import { adaptRunStream } from "./sdk/run-stream.js";
 import { XpertSdkClient } from "./sdk/client.js";
+import {
+  formatCliError,
+  normalizeSdkRequestError,
+} from "./sdk/request-errors.js";
 import { createToolRegistry } from "./tools/registry.js";
 import { HostExecutionBackend } from "./tools/backends/host.js";
 import type {
@@ -114,6 +118,9 @@ export async function runAgentTurn(options: {
 
     while (true) {
       throwIfAborted(options.signal);
+      const requestOperation = pendingToolMessages
+        ? "resumeWithToolMessages"
+        : "streamPrompt";
 
       const state: { threadId?: string; runId?: string } = {
         threadId: options.session.threadId,
@@ -161,6 +168,7 @@ export async function runAgentTurn(options: {
           });
 
       const toolMessages: ClientToolMessageInput[] = [];
+      let sawDone = false;
 
       for await (const event of adaptRunStream(request.stream, state)) {
         throwIfAborted(options.signal);
@@ -486,14 +494,17 @@ export async function runAgentTurn(options: {
         }
 
         if (event.type === "error") {
-          emitTurnEvent({
-            type: "error",
-            message: event.message,
+          throw normalizeSdkRequestError(new Error(event.message), {
+            operation: requestOperation,
+            apiUrl: options.config.apiUrl,
+            url: request.requestUrl,
+            method: "POST",
+            phase: "stream",
           });
-          throw new Error(event.message);
         }
 
         if (event.type === "done") {
+          sawDone = true;
           if (state.runId) {
             executionId = state.runId;
             options.session.runId = state.runId;
@@ -505,6 +516,19 @@ export async function runAgentTurn(options: {
       }
 
       throwIfAborted(options.signal);
+      if (!sawDone && toolMessages.length === 0) {
+        throw normalizeSdkRequestError(
+          new Error("run stream ended before a complete event"),
+          {
+            operation: requestOperation,
+            apiUrl: options.config.apiUrl,
+            url: request.requestUrl,
+            method: "POST",
+            phase: "stream",
+          },
+        );
+      }
+
       options.session.checkpointId = await sdk.getCheckpoint(
         options.session.threadId ?? failMissingThreadId(),
       );
@@ -534,7 +558,7 @@ export async function runAgentTurn(options: {
 
     finishTurn({
       status: "failed",
-      error: error instanceof Error ? error.message : String(error),
+      error: formatCliError(error),
     });
     throw error;
   }

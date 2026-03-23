@@ -6,6 +6,10 @@ import {
   type RunLocalContext,
 } from "../context/run-context.js";
 import { buildResumeInput, type ClientToolMessageInput } from "./tool-resume.js";
+import {
+  isAbortLikeError,
+  normalizeSdkRequestError,
+} from "./request-errors.js";
 import { iterateSseResponse } from "./sse.js";
 
 export interface StreamRunRequest {
@@ -30,6 +34,7 @@ export interface ResumeRunRequest {
 export interface RunStreamResponse {
   threadId: string;
   stream: AsyncIterable<{ event?: string; data: unknown }>;
+  requestUrl?: string;
 }
 
 export class XpertSdkClient {
@@ -54,15 +59,38 @@ export class XpertSdkClient {
       return existingThreadId;
     }
 
-    const thread = await this.#client.threads.create({
-      metadata: {
-        source: "xpert-cli",
-        cwd: this.#config.cwd,
-        project_root: this.#config.projectRoot,
-      },
-    });
+    let requestUrl: string | undefined;
+    try {
+      requestUrl = buildApiUrl(this.#config.apiUrl, "threads").toString();
+    } catch (error) {
+      throw normalizeSdkRequestError(error, {
+        operation: "ensureThread",
+        apiUrl: this.#config.apiUrl,
+        method: "POST",
+      });
+    }
 
-    return thread.thread_id;
+    try {
+      const thread = await this.#client.threads.create({
+        metadata: {
+          source: "xpert-cli",
+          cwd: this.#config.cwd,
+          project_root: this.#config.projectRoot,
+        },
+      });
+
+      return thread.thread_id;
+    } catch (error) {
+      if (isAbortLikeError(error)) {
+        throw error;
+      }
+      throw normalizeSdkRequestError(error, {
+        operation: "ensureThread",
+        apiUrl: this.#config.apiUrl,
+        url: requestUrl,
+        method: "POST",
+      });
+    }
   }
 
   async streamPrompt(request: StreamRunRequest): Promise<RunStreamResponse> {
@@ -90,7 +118,7 @@ export class XpertSdkClient {
       onRunCreated: request.onRunCreated,
     });
 
-    return { threadId, stream };
+    return { threadId, stream, requestUrl: stream.requestUrl };
   }
 
   async resumeWithToolMessages(
@@ -122,23 +150,46 @@ export class XpertSdkClient {
       onRunCreated: request.onRunCreated,
     });
 
-    return { threadId: request.threadId, stream };
+    return { threadId: request.threadId, stream, requestUrl: stream.requestUrl };
   }
 
   async getCheckpoint(threadId: string): Promise<string | undefined> {
-    const state = await this.#client.threads.getState(threadId);
-    const checkpoint = state.checkpoint as Record<string, unknown> | undefined;
-    const configurable =
-      (checkpoint?.configurable as Record<string, unknown> | undefined) ??
-      checkpoint;
+    let requestUrl: string | undefined;
+    try {
+      requestUrl = buildApiUrl(this.#config.apiUrl, `threads/${threadId}/state`).toString();
+    } catch (error) {
+      throw normalizeSdkRequestError(error, {
+        operation: "getCheckpoint",
+        apiUrl: this.#config.apiUrl,
+        method: "GET",
+      });
+    }
 
-    if (
-      configurable &&
-      typeof configurable === "object" &&
-      "checkpoint_id" in configurable &&
-      typeof configurable.checkpoint_id === "string"
-    ) {
-      return configurable.checkpoint_id;
+    try {
+      const state = await this.#client.threads.getState(threadId);
+      const checkpoint = state.checkpoint as Record<string, unknown> | undefined;
+      const configurable =
+        (checkpoint?.configurable as Record<string, unknown> | undefined) ??
+        checkpoint;
+
+      if (
+        configurable &&
+        typeof configurable === "object" &&
+        "checkpoint_id" in configurable &&
+        typeof configurable.checkpoint_id === "string"
+      ) {
+        return configurable.checkpoint_id;
+      }
+    } catch (error) {
+      if (isAbortLikeError(error)) {
+        throw error;
+      }
+      throw normalizeSdkRequestError(error, {
+        operation: "getCheckpoint",
+        apiUrl: this.#config.apiUrl,
+        url: requestUrl,
+        method: "GET",
+      });
     }
 
     return undefined;
@@ -158,10 +209,28 @@ export class XpertSdkClient {
     context: Record<string, unknown>;
     signal?: AbortSignal;
     onRunCreated?: (params: { runId?: string; threadId?: string }) => void;
-  }): Promise<AsyncIterable<{ event?: string; data: unknown }>> {
-    const response = await fetch(
-      buildApiUrl(this.#config.apiUrl, `threads/${params.threadId}/runs/stream`),
-      {
+  }): Promise<AsyncIterable<{ event?: string; data: unknown }> & { requestUrl?: string }> {
+    const operation = isResumeInput(params.input)
+      ? "resumeWithToolMessages"
+      : "streamPrompt";
+    let requestUrl: string | undefined;
+    try {
+      requestUrl = buildApiUrl(
+        this.#config.apiUrl,
+        `threads/${params.threadId}/runs/stream`,
+      ).toString();
+    } catch (error) {
+      throw normalizeSdkRequestError(error, {
+        operation,
+        apiUrl: this.#config.apiUrl,
+        method: "POST",
+      });
+    }
+    const resolvedRequestUrl = requestUrl;
+
+    let response: Response;
+    try {
+      response = await fetch(resolvedRequestUrl, {
         method: "POST",
         headers: this.buildHeaders(),
         signal: params.signal,
@@ -170,16 +239,55 @@ export class XpertSdkClient {
           input: params.input,
           context: params.context,
         }),
-      },
-    );
+      });
+    } catch (error) {
+      if (isAbortLikeError(error)) {
+        throw error;
+      }
+      throw normalizeSdkRequestError(error, {
+        operation,
+        apiUrl: this.#config.apiUrl,
+        url: resolvedRequestUrl,
+        method: "POST",
+      });
+    }
 
     if (!response.ok) {
-      throw new Error(await readErrorResponse(response));
+      throw normalizeSdkRequestError(new Error(`HTTP ${response.status}`), {
+        operation,
+        apiUrl: this.#config.apiUrl,
+        url: resolvedRequestUrl,
+        method: "POST",
+        statusCode: response.status,
+        responseBody: await readResponseBody(response),
+      });
+    }
+
+    const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+    if (!contentType.includes("text/event-stream")) {
+      throw normalizeSdkRequestError(
+        new Error(`Expected text/event-stream response but received ${contentType || "unknown content-type"}`),
+        {
+          operation,
+          apiUrl: this.#config.apiUrl,
+          url: resolvedRequestUrl,
+          method: "POST",
+          phase: "sse_connect",
+          responseBody: await readResponseBody(response),
+        },
+      );
     }
 
     params.onRunCreated?.(getRunMetadataFromResponse(response));
 
-    return iterateSseResponse(response, { signal: params.signal });
+    return wrapStreamRequest(
+      iterateSseResponse(response, { signal: params.signal }),
+      {
+        operation,
+        apiUrl: this.#config.apiUrl,
+        requestUrl: resolvedRequestUrl,
+      },
+    );
   }
 
   private buildHeaders(): Record<string, string> {
@@ -221,31 +329,9 @@ function getRunMetadataFromResponse(response: Response): {
   };
 }
 
-async function readErrorResponse(response: Response): Promise<string> {
+async function readResponseBody(response: Response): Promise<string | undefined> {
   const body = await response.text();
-  if (!body.trim()) {
-    return `Run stream failed with HTTP ${response.status}`;
-  }
-
-  try {
-    const parsed = JSON.parse(body) as {
-      message?: string | string[];
-      error?: string;
-    };
-    if (Array.isArray(parsed.message)) {
-      return parsed.message.join("; ");
-    }
-    if (typeof parsed.message === "string") {
-      return parsed.message;
-    }
-    if (typeof parsed.error === "string") {
-      return parsed.error;
-    }
-  } catch {
-    //
-  }
-
-  return body;
+  return body.trim() ? body : undefined;
 }
 
 function buildApiUrl(apiUrl: string, path: string): URL {
@@ -286,4 +372,42 @@ function stringifyToolMessageContent(content: unknown): string {
   } catch {
     return String(content);
   }
+}
+
+function isResumeInput(input: Record<string, unknown>): boolean {
+  return "decision" in input;
+}
+
+function wrapStreamRequest(
+  stream: AsyncIterable<{ event?: string; data: unknown }>,
+  input: {
+    operation: "streamPrompt" | "resumeWithToolMessages";
+    apiUrl: string;
+    requestUrl: string;
+  },
+): AsyncIterable<{ event?: string; data: unknown }> & { requestUrl?: string } {
+  return {
+    requestUrl: input.requestUrl,
+    async *[Symbol.asyncIterator]() {
+      let sawChunk = false;
+
+      try {
+        for await (const chunk of stream) {
+          sawChunk = true;
+          yield chunk;
+        }
+      } catch (error) {
+        if (isAbortLikeError(error)) {
+          throw error;
+        }
+        throw normalizeSdkRequestError(error, {
+          operation: input.operation,
+          apiUrl: input.apiUrl,
+          url: input.requestUrl,
+          method: "POST",
+          phase: sawChunk ? "stream" : "sse_connect",
+        });
+      }
+    },
+  };
 }
