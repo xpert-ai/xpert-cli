@@ -58,7 +58,10 @@ export class PermissionManager {
   async request(
     toolName: string,
     args: unknown,
-    options?: { signal?: AbortSignal },
+    options?: {
+      signal?: AbortSignal;
+      onPromptRequest?: (request: PermissionRequest) => void;
+    },
   ): Promise<PermissionDecision> {
     const scope = resolvePermissionScope(toolName, args, {
       projectRoot: this.#session.projectRoot,
@@ -113,8 +116,7 @@ export class PermissionManager {
       };
     }
 
-    const result = await this.#promptForPermission(
-      {
+    const promptRequest: PermissionRequest = {
       toolName,
       riskLevel: scope.riskLevel,
       reason: scope.reason,
@@ -122,7 +124,11 @@ export class PermissionManager {
       scope: scope.summary,
       canRememberAllow: scope.canRememberAllow,
       canRememberDeny: scope.canRememberDeny,
-      },
+    };
+    options?.onPromptRequest?.(promptRequest);
+
+    const result = await this.#promptForPermission(
+      promptRequest,
       options?.signal,
     );
 

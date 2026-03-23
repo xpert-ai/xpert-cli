@@ -62,4 +62,23 @@ describe("InlinePermissionController", () => {
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
     expect(controller.getState()).toBeNull();
   });
+
+  it("denies the current permission request when the prompt is explicitly dismissed", async () => {
+    const controller = new InlinePermissionController();
+
+    const pending = controller.request({
+      toolName: "Patch",
+      riskLevel: "moderate",
+      reason: "modify src/app.ts",
+      target: "src/app.ts",
+      scope: "Patch src/app.ts",
+      canRememberAllow: true,
+      canRememberDeny: true,
+    });
+
+    controller.denySelection();
+
+    await expect(pending).resolves.toEqual({ outcome: "deny" });
+    expect(controller.getState()).toBeNull();
+  });
 });

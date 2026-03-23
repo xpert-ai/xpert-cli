@@ -5,6 +5,11 @@ import type { ResolvedXpertCliConfig } from "@xpert-cli/contracts";
 import { runAgentTurn } from "./agent-loop.js";
 import { buildRunLocalContext } from "./context/run-context.js";
 import { runInterruptibleTurn, TurnCancelledError } from "./runtime/turn-control.js";
+import {
+  getNextTurnLifecycleState,
+  type TurnEvent,
+  type TurnLifecycleState,
+} from "./runtime/turn-events.js";
 import type { CliSessionState, SessionStore } from "./runtime/session-store.js";
 import { createToolRegistry } from "./tools/registry.js";
 import { runSlashCommand, summarizeGit } from "./ui/commands.js";
@@ -15,10 +20,10 @@ import {
   type UiHistoryItem,
   type UiHistoryItemInput,
 } from "./ui/history.js";
-import { applyUiEvent } from "./ui/ink-state.js";
+import { applyTurnEvent } from "./ui/ink-state.js";
 import { InkUiSink } from "./ui/ink-sink.js";
 import { InlinePermissionController } from "./ui/inline-permission.js";
-import { resolveCtrlCDecision } from "./ui/ctrl-c.js";
+import { resolveCtrlCAction } from "./ui/ctrl-c.js";
 import { Composer } from "./ui/ink/composer.js";
 import { Footer } from "./ui/ink/footer.js";
 import { MainContent } from "./ui/ink/main-content.js";
@@ -75,7 +80,9 @@ function InteractiveApp(props: {
 
   const [pending, setPending] = useState<PendingTurnState>(createEmptyPendingTurn());
   const [input, setInput] = useState("");
-  const [turnState, setTurnState] = useState<"idle" | "running" | "waiting">("idle");
+  const [turnLifecycleState, setTurnLifecycleState] = useState<TurnLifecycleState | "idle">(
+    "idle",
+  );
   const [permissionState, setPermissionState] = useState(
     permissionController.getState(),
   );
@@ -99,11 +106,17 @@ function InteractiveApp(props: {
     [nextHistoryId],
   );
 
-  const appendUiEvent = useCallback((event: Parameters<typeof applyUiEvent>[1]) => {
+  const appendTurnEvent = useCallback((event: TurnEvent) => {
     setPending((current) => {
-      const next = applyUiEvent(current, event);
+      const next = applyTurnEvent(current, event);
       pendingRef.current = next;
       return next;
+    });
+    setTurnLifecycleState((current) => {
+      if (current === "idle") {
+        return getNextTurnLifecycleState("running", event);
+      }
+      return getNextTurnLifecycleState(current, event);
     });
   }, []);
 
@@ -144,27 +157,18 @@ function InteractiveApp(props: {
   useEffect(() => {
     return permissionController.subscribe((state) => {
       setPermissionState(state);
-      setTurnState((current) => {
-        if (state) {
-          return "waiting";
-        }
-        return current === "waiting" ? "running" : current;
-      });
     });
   }, [permissionController]);
 
   const uiSink = useMemo(
     () =>
       new InkUiSink({
-        dispatch: appendUiEvent,
+        dispatch: appendTurnEvent,
         onNotice: ({ level, message }) => {
           setNotice(message);
-          if (level === "error") {
-            setTurnState((current) => (current === "idle" ? current : current));
-          }
         },
       }),
-    [appendUiEvent],
+    [appendTurnEvent],
   );
 
   const exitInteractive = useCallback(async () => {
@@ -173,6 +177,10 @@ function InteractiveApp(props: {
   }, [exit, props.sessionStore]);
 
   const submitPrompt = useCallback(async () => {
+    const turnState = toInteractiveTurnState({
+      lifecycleState: turnLifecycleState,
+      permissionActive: Boolean(permissionState),
+    });
     if (turnState !== "idle") {
       return;
     }
@@ -206,7 +214,7 @@ function InteractiveApp(props: {
     }
 
     resetPending();
-    setTurnState("running");
+    setTurnLifecycleState("running");
 
     try {
       const nextSession = await runInterruptibleTurn(
@@ -224,11 +232,12 @@ function InteractiveApp(props: {
           }),
         {
           onCancel: () => {
-            uiSink.showWarning("cancelled current turn");
+            setNotice("cancelled current turn");
           },
           onStart: (handle) => {
             cancelActiveTurnRef.current = handle.cancel;
           },
+          captureSigint: false,
         },
       );
 
@@ -248,7 +257,7 @@ function InteractiveApp(props: {
     } finally {
       cancelActiveTurnRef.current = null;
       commitPending();
-      setTurnState("idle");
+      setTurnLifecycleState("idle");
       await refreshStatus(sessionRef.current);
       if (exitAfterTurnRef.current) {
         exitAfterTurnRef.current = false;
@@ -267,42 +276,37 @@ function InteractiveApp(props: {
     resetPending,
     session,
     toolRegistry,
-    turnState,
+    turnLifecycleState,
+    permissionState,
     uiSink,
   ]);
+
+  const turnState = toInteractiveTurnState({
+    lifecycleState: turnLifecycleState,
+    permissionActive: Boolean(permissionState),
+  });
 
   useInput((value, key) => {
     if (
       key.ctrl &&
       (value === "c" || value === "C" || value === "\u0003")
     ) {
-      const now = Date.now();
-      const decision = resolveCtrlCDecision({
+      const action = resolveCtrlCAction({
         turnState,
-        now,
+        now: Date.now(),
         lastCtrlCAt: lastCtrlCAtRef.current ?? undefined,
         windowMs: DOUBLE_CTRL_C_WINDOW_MS,
       });
-      lastCtrlCAtRef.current = now;
+      lastCtrlCAtRef.current = action.lastCtrlCAt;
+      setNotice(action.notice);
+      exitAfterTurnRef.current = action.exitAfterTurn;
 
-      if (decision.kind === "exit_now") {
-        setNotice("exiting interactive mode");
+      if (action.shouldExitNow) {
         void exitInteractive();
         return;
       }
 
-      if (decision.kind === "request_exit") {
-        setNotice("press Ctrl+C again to exit");
-        exitAfterTurnRef.current = turnState !== "idle";
-        if (turnState === "idle") {
-          return;
-        }
-        cancelActiveTurnRef.current?.();
-        return;
-      }
-
-      setNotice("cancelled current turn. Press Ctrl+C again to exit.");
-      if (turnState === "running" || turnState === "waiting") {
+      if (action.shouldCancelTurn) {
         cancelActiveTurnRef.current?.();
       }
       return;
@@ -382,4 +386,21 @@ function createHistoryItem(id: string, item: UiHistoryItemInput): UiHistoryItem 
     id: id || randomUUID(),
     ...item,
   };
+}
+
+function toInteractiveTurnState(
+  input: {
+    lifecycleState: TurnLifecycleState | "idle";
+    permissionActive: boolean;
+  },
+): "idle" | "running" | "waiting_permission" {
+  if (input.permissionActive) {
+    return "waiting_permission";
+  }
+
+  if (input.lifecycleState === "running") {
+    return "running";
+  }
+
+  return "idle";
 }

@@ -6,13 +6,13 @@ export function HistoryItemView(props: { item: UiHistoryItem }) {
 }
 
 export function PendingTurnView(props: { pending: PendingTurnState }) {
-  if (props.pending.items.length === 0) {
+  if (props.pending.entries.length === 0) {
     return null;
   }
 
   return (
     <Box flexDirection="column" marginTop={1}>
-      {props.pending.items.map((item, index) => (
+      {props.pending.entries.map((item, index) => (
         <Box key={`pending-${index}`}>
           {renderPendingEntry(item)}
         </Box>

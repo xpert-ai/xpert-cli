@@ -1,7 +1,6 @@
 import type { ClientToolContextDescriptor, ToolName } from "@xpert-cli/contracts";
 import type { PermissionManager } from "../permissions/manager.js";
 import type { CliSessionState } from "../runtime/session-store.js";
-import type { UiSink } from "../ui/sink.js";
 
 export interface WriteFileArgs {
   path: string;
@@ -71,6 +70,7 @@ export interface ExecutionBackend {
     opts?: {
       cwd?: string;
       timeoutMs?: number;
+      streamOutput?: boolean;
       onLine?: (line: string) => void;
       signal?: AbortSignal;
     },
@@ -87,7 +87,6 @@ export interface ToolExecutionContext {
   backend: ExecutionBackend;
   permissions: PermissionManager;
   session: CliSessionState;
-  ui: UiSink;
   signal?: AbortSignal;
 }
 

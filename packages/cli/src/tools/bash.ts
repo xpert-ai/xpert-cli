@@ -20,7 +20,7 @@ export const bashTool: ToolDefinition<{
     const result = await context.backend.exec(args.command, {
       cwd: args.cwd ?? context.cwd,
       timeoutMs: args.timeoutMs,
-      onLine: (line) => context.ui.showBashLine(line),
+      streamOutput: true,
       signal: context.signal,
     });
 

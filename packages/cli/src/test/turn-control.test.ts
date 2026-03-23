@@ -52,4 +52,36 @@ describe("runInterruptibleTurn", () => {
     await expect(execution).rejects.toBeInstanceOf(TurnCancelledError);
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
+
+  it("can skip installing a SIGINT handler when the UI handles Ctrl+C itself", async () => {
+    const onSpy = vi.spyOn(process, "on");
+    const offSpy = vi.spyOn(process, "off");
+    let cancel: (() => void) | undefined;
+
+    const execution = runInterruptibleTurn(
+      (signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => reject(signal.reason),
+            { once: true },
+          );
+        }),
+      {
+        captureSigint: false,
+        onStart: (handle) => {
+          cancel = handle.cancel;
+        },
+      },
+    );
+
+    cancel?.();
+
+    await expect(execution).rejects.toBeInstanceOf(TurnCancelledError);
+    expect(onSpy).not.toHaveBeenCalledWith("SIGINT", expect.any(Function));
+    expect(offSpy).not.toHaveBeenCalledWith("SIGINT", expect.any(Function));
+
+    onSpy.mockRestore();
+    offSpy.mockRestore();
+  });
 });

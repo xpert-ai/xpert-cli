@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveCtrlCDecision } from "../ui/ctrl-c.js";
+import { resolveCtrlCAction, resolveCtrlCDecision } from "../ui/ctrl-c.js";
 
 describe("resolveCtrlCDecision", () => {
   it("cancels the active turn on the first Ctrl+C while running", () => {
@@ -42,5 +42,38 @@ describe("resolveCtrlCDecision", () => {
         windowMs: 1_200,
       }),
     ).toEqual({ kind: "request_exit" });
+  });
+
+  it("cancels an in-flight permission wait without exiting the app", () => {
+    expect(
+      resolveCtrlCAction({
+        turnState: "waiting_permission",
+        now: 1_000,
+        windowMs: 1_200,
+      }),
+    ).toEqual({
+      shouldCancelTurn: true,
+      shouldExitNow: false,
+      exitAfterTurn: false,
+      notice: "cancelled current turn. Press Ctrl+C again to exit.",
+      lastCtrlCAt: 1_000,
+    });
+  });
+
+  it("requests exit after cancelling an active turn", () => {
+    expect(
+      resolveCtrlCAction({
+        turnState: "running",
+        now: 1_500,
+        lastCtrlCAt: 1_000,
+        windowMs: 1_200,
+      }),
+    ).toEqual({
+      shouldCancelTurn: true,
+      shouldExitNow: false,
+      exitAfterTurn: true,
+      notice: "press Ctrl+C again to exit",
+      lastCtrlCAt: 1_500,
+    });
   });
 });

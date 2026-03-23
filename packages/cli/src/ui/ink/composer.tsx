@@ -2,7 +2,7 @@ import { Box, Text } from "ink";
 
 export function Composer(props: {
   value: string;
-  turnState: "idle" | "running" | "waiting";
+  turnState: "idle" | "running" | "waiting_permission";
 }) {
   if (props.turnState === "running") {
     return (
@@ -12,7 +12,7 @@ export function Composer(props: {
     );
   }
 
-  if (props.turnState === "waiting") {
+  if (props.turnState === "waiting_permission") {
     return (
       <Box marginTop={1}>
         <Text dimColor>waiting for permission response... Press Ctrl+C to cancel.</Text>

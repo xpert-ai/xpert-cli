@@ -1,13 +1,19 @@
-import type { ToolCallSummary } from "@xpert-cli/contracts";
 import type { ResolvedXpertCliConfig } from "@xpert-cli/contracts";
 import { PermissionManager } from "./permissions/manager.js";
 import { buildRunLocalContext } from "./context/run-context.js";
 import { ToolCallGuard } from "./runtime/tool-call-guard.js";
 import {
-  pushTurnTranscript,
   summarizeToolArgs,
   TurnTranscriptRecorder,
 } from "./runtime/turn-transcript.js";
+import {
+  createSessionRuntimeConsumer,
+  createTurnEventDispatcher,
+  createTurnTranscriptConsumer,
+  createUiTurnEventConsumer,
+  createWorkingSetConsumer,
+} from "./runtime/turn-event-consumers.js";
+import type { TurnEventInput } from "./runtime/turn-events.js";
 import {
   ToolCallBudget,
   toToolBudgetExceededResult,
@@ -17,7 +23,6 @@ import {
   validateToolPayload,
 } from "./runtime/tool-validation.js";
 import { isAbortError, throwIfAborted } from "./runtime/turn-control.js";
-import { pushRecentFile, pushToolSummary } from "./runtime/working-set.js";
 import type { CliSessionState } from "./runtime/session-store.js";
 import { buildToolMessage, type ClientToolMessageInput } from "./sdk/tool-resume.js";
 import { adaptRunStream } from "./sdk/run-stream.js";
@@ -25,6 +30,7 @@ import { XpertSdkClient } from "./sdk/client.js";
 import { createToolRegistry } from "./tools/registry.js";
 import { HostExecutionBackend } from "./tools/backends/host.js";
 import type {
+  ExecutionBackend,
   ToolExecutionContext,
   ToolExecutionResult,
   ToolRegistry,
@@ -62,9 +68,18 @@ export async function runAgentTurn(options: {
     checkpointId: options.session.checkpointId,
   });
   let finalized = false;
+  const emitTurnEvent = createTurnEventDispatcher([
+    createSessionRuntimeConsumer(options.session),
+    createWorkingSetConsumer(options.session),
+    createTurnTranscriptConsumer({
+      session: options.session,
+      recorder: transcript,
+    }),
+    createUiTurnEventConsumer(ui),
+  ]);
 
-  const finalizeTranscript = (input: {
-    status: "completed" | "error" | "cancelled";
+  const finishTurn = (input: {
+    status: "completed" | "cancelled" | "failed";
     error?: string;
     cancelled?: boolean;
   }): void => {
@@ -72,28 +87,27 @@ export async function runAgentTurn(options: {
       return;
     }
 
-    transcript.setIdentifiers({
+    emitTurnEvent({
+      type: "turn_finished",
+      status: input.status,
       threadId: options.session.threadId,
       runId: options.session.runId,
       checkpointId: options.session.checkpointId,
+      error: input.error,
+      cancelled: input.cancelled,
     });
-    options.session.turns = pushTurnTranscript(
-      options.session.turns ?? [],
-      transcript.finish({
-        status: input.status,
-        threadId: options.session.threadId,
-        runId: options.session.runId,
-        checkpointId: options.session.checkpointId,
-        error: input.error,
-        cancelled: input.cancelled,
-      }),
-    );
     finalized = true;
   };
 
   try {
     options.session.threadId = await sdk.ensureThread(options.session.threadId);
-    transcript.setIdentifiers({ threadId: options.session.threadId });
+    emitTurnEvent({
+      type: "turn_started",
+      prompt: options.prompt,
+      threadId: options.session.threadId,
+      runId: options.session.runId,
+      checkpointId: options.session.checkpointId,
+    });
 
     let pendingToolMessages: ClientToolMessageInput[] | null = null;
     let executionId = options.session.runId;
@@ -101,7 +115,7 @@ export async function runAgentTurn(options: {
     while (true) {
       throwIfAborted(options.signal);
 
-      const state = {
+      const state: { threadId?: string; runId?: string } = {
         threadId: options.session.threadId,
         runId: executionId,
       };
@@ -113,7 +127,7 @@ export async function runAgentTurn(options: {
 
       const request = pendingToolMessages
         ? await sdk.resumeWithToolMessages({
-            threadId: options.session.threadId,
+            threadId: options.session.threadId ?? failMissingThreadId(),
             executionId: executionId ?? failMissingExecutionId(),
             clientTools: registry.clientTools,
             localContext,
@@ -127,7 +141,6 @@ export async function runAgentTurn(options: {
               if (threadId) {
                 options.session.threadId = threadId;
               }
-              transcript.setIdentifiers({ runId, threadId });
             },
           })
         : await sdk.streamPrompt({
@@ -144,7 +157,6 @@ export async function runAgentTurn(options: {
               if (threadId) {
                 options.session.threadId = threadId;
               }
-              transcript.setIdentifiers({ runId, threadId });
             },
           });
 
@@ -154,13 +166,18 @@ export async function runAgentTurn(options: {
         throwIfAborted(options.signal);
 
         if (event.type === "text_delta") {
-          ui.appendAssistantText(event.text);
-          transcript.appendAssistantText(event.text);
+          emitTurnEvent({
+            type: "assistant_text_delta",
+            text: event.text,
+          });
           continue;
         }
 
         if (event.type === "reasoning") {
-          ui.showReasoning(event.text);
+          emitTurnEvent({
+            type: "reasoning",
+            text: event.text,
+          });
           continue;
         }
 
@@ -178,8 +195,14 @@ export async function runAgentTurn(options: {
             continue;
           }
 
-          ui.lineBreak();
-          ui.showToolCall(event.toolName, stringifyTarget(args));
+          emitTurnEvent({
+            type: "tool_requested",
+            callId: event.callId,
+            toolName: event.toolName,
+            argsSummary,
+            target: stringifyTarget(args),
+            interruptId: event.interruptId,
+          });
 
           if (guardDecision.kind === "blocked") {
             const result = toToolErrorResult({
@@ -195,16 +218,22 @@ export async function runAgentTurn(options: {
             });
             toolCallGuard.remember(event.callId, message);
             toolMessages.push(message);
-            pushSummary(options.session, event, result, "error");
-            transcript.recordToolEvent({
+            emitTurnEvent({
+              type: "warning",
+              message: result.summary,
+              callId: event.callId,
+              toolName: event.toolName,
+              code: "REPEATED_TOOL_CALL_BLOCKED",
+            });
+            emitTurnEvent({
+              type: "tool_completed",
               callId: event.callId,
               toolName: event.toolName,
               argsSummary,
-              resultSummary: result.summary,
+              summary: result.summary,
               status: "error",
               code: "REPEATED_TOOL_CALL_BLOCKED",
             });
-            ui.showWarning(result.summary);
             continue;
           }
 
@@ -220,16 +249,22 @@ export async function runAgentTurn(options: {
             });
             toolCallGuard.remember(event.callId, message);
             toolMessages.push(message);
-            pushSummary(options.session, event, result, "error");
-            transcript.recordToolEvent({
+            emitTurnEvent({
+              type: "warning",
+              message: result.summary,
+              callId: event.callId,
+              toolName: event.toolName,
+              code: "TOOL_CALL_BUDGET_EXCEEDED",
+            });
+            emitTurnEvent({
+              type: "tool_completed",
               callId: event.callId,
               toolName: event.toolName,
               argsSummary,
-              resultSummary: result.summary,
+              summary: result.summary,
               status: "error",
               code: "TOOL_CALL_BUDGET_EXCEEDED",
             });
-            ui.showWarning(result.summary);
             continue;
           }
 
@@ -247,12 +282,19 @@ export async function runAgentTurn(options: {
             });
             toolCallGuard.remember(event.callId, message);
             toolMessages.push(message);
-            pushSummary(options.session, event, result, "error");
-            transcript.recordToolEvent({
+            emitTurnEvent({
+              type: "warning",
+              message: result.summary,
+              callId: event.callId,
+              toolName: event.toolName,
+              code: "UNKNOWN_TOOL",
+            });
+            emitTurnEvent({
+              type: "tool_completed",
               callId: event.callId,
               toolName: event.toolName,
               argsSummary,
-              resultSummary: result.summary,
+              summary: result.summary,
               status: "error",
               code: "UNKNOWN_TOOL",
             });
@@ -273,28 +315,48 @@ export async function runAgentTurn(options: {
             });
             toolCallGuard.remember(event.callId, message);
             toolMessages.push(message);
-            pushSummary(options.session, event, result, "error");
-            transcript.recordToolEvent({
+            emitTurnEvent({
+              type: "warning",
+              message: result.summary,
+              callId: event.callId,
+              toolName: tool.name,
+              code: validation.error.code,
+            });
+            emitTurnEvent({
+              type: "tool_completed",
               callId: event.callId,
               toolName: tool.name,
               argsSummary,
-              resultSummary: result.summary,
+              summary: result.summary,
               status: "error",
               code: validation.error.code,
             });
-            ui.showWarning(result.summary);
             continue;
           }
 
           const validatedArgs = validation.value;
           const decision = await permissions.request(tool.name, validatedArgs, {
             signal: options.signal,
+            onPromptRequest: (request) => {
+              emitTurnEvent({
+                type: "permission_requested",
+                callId: event.callId,
+                toolName: tool.name,
+                riskLevel: request.riskLevel,
+                scope: request.scope,
+                target: request.target,
+                reason: request.reason,
+              });
+            },
           });
-          transcript.recordPermissionEvent({
+          emitTurnEvent({
+            type: "permission_resolved",
+            callId: event.callId,
             toolName: tool.name,
             riskLevel: decision.riskLevel,
             decision: decision.outcome,
             scope: decision.scope,
+            allowed: decision.allowed,
             target: decision.target,
             reason: decision.reason,
             remembered: decision.remembered,
@@ -320,26 +382,35 @@ export async function runAgentTurn(options: {
             });
             toolCallGuard.remember(event.callId, message);
             toolMessages.push(message);
-            pushSummary(options.session, event, result, "denied");
-            transcript.recordToolEvent({
+            emitTurnEvent({
+              type: "warning",
+              message: `denied ${tool.name}`,
+              callId: event.callId,
+              toolName: tool.name,
+              code: "PERMISSION_DENIED",
+            });
+            emitTurnEvent({
+              type: "tool_completed",
               callId: event.callId,
               toolName: tool.name,
               argsSummary,
-              resultSummary: result.summary,
+              summary: result.summary,
               status: "denied",
               code: "PERMISSION_DENIED",
             });
-            ui.showWarning(`denied ${tool.name}`);
             continue;
           }
 
           const toolContext: ToolExecutionContext = {
             projectRoot: options.session.projectRoot,
             cwd: options.session.cwd,
-            backend,
+            backend: createTurnEventExecutionBackend(backend, {
+              callId: event.callId,
+              toolName: tool.name,
+              emitTurnEvent,
+            }),
             permissions,
             session: options.session,
-            ui,
             signal: options.signal,
           };
 
@@ -353,19 +424,15 @@ export async function runAgentTurn(options: {
             });
             toolCallGuard.remember(event.callId, message);
             toolMessages.push(message);
-            pushSummary(options.session, event, result, "success");
-            transcript.recordToolEvent({
+            emitTurnEvent({
+              type: "tool_completed",
               callId: event.callId,
               toolName: tool.name,
               argsSummary,
-              resultSummary: result.summary,
+              summary: result.summary,
               status: "success",
+              changedFiles: result.changedFiles,
             });
-            transcript.addChangedFiles(result.changedFiles);
-            for (const filePath of result.changedFiles ?? []) {
-              options.session.recentFiles = pushRecentFile(options.session.recentFiles, filePath);
-            }
-            ui.showToolAck(tool.name, result.summary);
           } catch (error) {
             if (isAbortError(error)) {
               throw error;
@@ -383,16 +450,22 @@ export async function runAgentTurn(options: {
             });
             toolCallGuard.remember(event.callId, message);
             toolMessages.push(message);
-            pushSummary(options.session, event, result, "error");
-            transcript.recordToolEvent({
+            emitTurnEvent({
+              type: "error",
+              message: result.summary,
+              callId: event.callId,
+              toolName: tool.name,
+              code: "TOOL_EXECUTION_ERROR",
+            });
+            emitTurnEvent({
+              type: "tool_completed",
               callId: event.callId,
               toolName: tool.name,
               argsSummary,
-              resultSummary: result.summary,
+              summary: result.summary,
               status: "error",
               code: "TOOL_EXECUTION_ERROR",
             });
-            ui.showError(result.summary);
           }
 
           continue;
@@ -403,8 +476,8 @@ export async function runAgentTurn(options: {
         }
 
         if (event.type === "checkpoint") {
-          options.session.checkpointId = event.checkpointId;
-          transcript.setIdentifiers({
+          emitTurnEvent({
+            type: "checkpoint_updated",
             checkpointId: event.checkpointId,
             threadId: event.threadId,
             runId: event.runId,
@@ -413,7 +486,10 @@ export async function runAgentTurn(options: {
         }
 
         if (event.type === "error") {
-          ui.showError(event.message);
+          emitTurnEvent({
+            type: "error",
+            message: event.message,
+          });
           throw new Error(event.message);
         }
 
@@ -422,20 +498,25 @@ export async function runAgentTurn(options: {
             executionId = state.runId;
             options.session.runId = state.runId;
           }
-          transcript.setIdentifiers({
-            threadId: state.threadId,
-            runId: state.runId,
-          });
+          if (state.threadId) {
+            options.session.threadId = state.threadId;
+          }
         }
       }
 
-      ui.lineBreak();
       throwIfAborted(options.signal);
-      options.session.checkpointId = await sdk.getCheckpoint(options.session.threadId);
-      transcript.setIdentifiers({ checkpointId: options.session.checkpointId });
+      options.session.checkpointId = await sdk.getCheckpoint(
+        options.session.threadId ?? failMissingThreadId(),
+      );
+      emitTurnEvent({
+        type: "checkpoint_updated",
+        checkpointId: options.session.checkpointId,
+        threadId: options.session.threadId,
+        runId: options.session.runId,
+      });
 
       if (toolMessages.length === 0) {
-        finalizeTranscript({ status: "completed" });
+        finishTurn({ status: "completed" });
         return options.session;
       }
 
@@ -443,7 +524,7 @@ export async function runAgentTurn(options: {
     }
   } catch (error) {
     if (isAbortError(error)) {
-      finalizeTranscript({
+      finishTurn({
         status: "cancelled",
         error: "Turn cancelled",
         cancelled: true,
@@ -451,27 +532,12 @@ export async function runAgentTurn(options: {
       throw error;
     }
 
-    finalizeTranscript({
-      status: "error",
+    finishTurn({
+      status: "failed",
       error: error instanceof Error ? error.message : String(error),
     });
     throw error;
   }
-}
-
-function pushSummary(
-  session: CliSessionState,
-  event: { callId: string; toolName: string },
-  result: ToolExecutionResult,
-  status: ToolCallSummary["status"],
-): void {
-  session.recentToolCalls = pushToolSummary(session.recentToolCalls, {
-    id: event.callId,
-    toolName: event.toolName as ToolCallSummary["toolName"],
-    summary: result.summary,
-    status,
-    createdAt: new Date().toISOString(),
-  });
 }
 
 function toToolErrorResult(input: {
@@ -506,4 +572,61 @@ function stringifyTarget(args: unknown): string | undefined {
 
 function failMissingExecutionId(): never {
   throw new Error("Missing execution id for tool resume");
+}
+
+function failMissingThreadId(): never {
+  throw new Error("Missing thread id for turn runtime");
+}
+
+function createTurnEventExecutionBackend(
+  backend: ExecutionBackend,
+  options: {
+    callId: string;
+    toolName: string;
+    emitTurnEvent: (event: TurnEventInput) => void;
+  },
+): ExecutionBackend {
+  return {
+    mode: backend.mode,
+    readFile: (filePath, opts) => backend.readFile(filePath, opts),
+    glob: (pattern, searchPath) => backend.glob(pattern, searchPath),
+    grep: (pattern, searchPath, glob) => backend.grep(pattern, searchPath, glob),
+    writeFile: async (args) => {
+      const result = await backend.writeFile(args);
+      options.emitTurnEvent({
+        type: "tool_diff",
+        callId: options.callId,
+        toolName: options.toolName,
+        diffText: result.diff,
+        path: result.path,
+      });
+      return result;
+    },
+    patchFile: async (args) => {
+      const result = await backend.patchFile(args);
+      options.emitTurnEvent({
+        type: "tool_diff",
+        callId: options.callId,
+        toolName: options.toolName,
+        diffText: result.diff,
+        path: result.path,
+      });
+      return result;
+    },
+    exec: (command, opts) =>
+      backend.exec(command, {
+        ...opts,
+        onLine: opts?.streamOutput
+          ? (line) => {
+              options.emitTurnEvent({
+                type: "tool_output_line",
+                callId: options.callId,
+                toolName: options.toolName,
+                line,
+              });
+              opts?.onLine?.(line);
+            }
+          : opts?.onLine,
+      }),
+  };
 }

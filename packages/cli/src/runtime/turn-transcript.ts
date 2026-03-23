@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { RiskLevel } from "@xpert-cli/contracts";
+import type { TurnEvent } from "./turn-events.js";
 
 export const TURN_TRANSCRIPT_LIMITS = {
   maxTurns: 20,
@@ -98,6 +99,38 @@ export class TurnTranscriptRecorder {
     }
     if (input.checkpointId) {
       this.#checkpointId = input.checkpointId;
+    }
+  }
+
+  consume(event: TurnEvent): void {
+    switch (event.type) {
+      case "assistant_text_delta":
+        this.appendAssistantText(event.text);
+        return;
+      case "permission_resolved":
+        this.recordPermissionEvent({
+          toolName: event.toolName,
+          riskLevel: event.riskLevel,
+          decision: event.decision,
+          scope: event.scope,
+          target: event.target,
+          reason: event.reason,
+          remembered: event.remembered,
+        });
+        return;
+      case "tool_completed":
+        this.recordToolEvent({
+          callId: event.callId,
+          toolName: event.toolName,
+          argsSummary: event.argsSummary,
+          resultSummary: event.summary,
+          status: event.status,
+          code: event.code,
+        });
+        this.addChangedFiles(event.changedFiles);
+        return;
+      default:
+        return;
     }
   }
 

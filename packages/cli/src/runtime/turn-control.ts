@@ -15,6 +15,7 @@ export async function runInterruptibleTurn<T>(
   options?: {
     onCancel?: () => void;
     onStart?: (handle: InterruptibleTurnHandle) => void;
+    captureSigint?: boolean;
   },
 ): Promise<T> {
   const controller = new AbortController();
@@ -34,7 +35,9 @@ export async function runInterruptibleTurn<T>(
     cancel();
   };
 
-  process.on("SIGINT", onSigint);
+  if (options?.captureSigint !== false) {
+    process.on("SIGINT", onSigint);
+  }
   options?.onStart?.({
     signal: controller.signal,
     cancel,
@@ -48,7 +51,9 @@ export async function runInterruptibleTurn<T>(
     }
     throw error;
   } finally {
-    process.off("SIGINT", onSigint);
+    if (options?.captureSigint !== false) {
+      process.off("SIGINT", onSigint);
+    }
   }
 }
 

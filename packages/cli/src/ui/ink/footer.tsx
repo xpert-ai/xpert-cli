@@ -7,7 +7,7 @@ export function Footer(props: {
   git: string;
   sessionId: string;
   approvalMode: ApprovalMode;
-  turnState: "idle" | "running" | "waiting";
+  turnState: "idle" | "running" | "waiting_permission";
   notice?: string;
 }) {
   const parts = [

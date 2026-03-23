@@ -3,8 +3,7 @@ import type { ToolExecutionContext } from "../tools/contracts.js";
 import { patchTool } from "../tools/patch.js";
 
 describe("patchTool", () => {
-  it("prints the diff and records changed files for multi-edit patches", async () => {
-    const showDiff = vi.fn();
+  it("returns changed files for multi-edit patches", async () => {
     const patchFile = vi.fn().mockResolvedValue({
       path: "src/demo.ts",
       diff: "--- src/demo.ts\n+++ src/demo.ts\n+const demo = 2;\n",
@@ -15,7 +14,6 @@ describe("patchTool", () => {
 
     const context = {
       backend: { patchFile },
-      ui: { showDiff },
     } as unknown as ToolExecutionContext;
 
     const result = await patchTool.execute(
@@ -54,7 +52,6 @@ describe("patchTool", () => {
         },
       ],
     });
-    expect(showDiff).toHaveBeenCalledWith(expect.stringContaining("+const demo = 2;"));
     expect(result.changedFiles).toEqual(["src/demo.ts"]);
     expect(result.content).toBe("Patched src/demo.ts. Applied 2 edits.");
   });

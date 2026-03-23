@@ -39,24 +39,27 @@ export type PendingTurnEntry =
   | { type: "error"; text: string };
 
 export interface PendingTurnState {
+  entries: PendingTurnEntry[];
   items: PendingTurnEntry[];
 }
 
 export function createEmptyPendingTurn(): PendingTurnState {
+  const entries: PendingTurnEntry[] = [];
   return {
-    items: [],
+    entries,
+    items: entries,
   };
 }
 
 export function hasPendingTurnContent(pending: PendingTurnState): boolean {
-  return pending.items.length > 0;
+  return pending.entries.length > 0;
 }
 
 export function materializePendingTurn(
   pending: PendingTurnState,
   createId: () => string,
 ): UiHistoryItem[] {
-  return pending.items.map((item) => {
+  return pending.entries.map((item) => {
     switch (item.type) {
       case "assistant_text":
         return { id: createId(), type: "assistant_text", text: item.text };

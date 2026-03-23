@@ -1,4 +1,6 @@
-export type UiEvent =
+import type { TurnEvent } from "../runtime/turn-events.js";
+
+export type LegacyUiEvent =
   | { type: "assistant_text"; text: string }
   | { type: "reasoning"; text: string }
   | { type: "tool_call"; toolName: string; target?: string }
@@ -7,3 +9,5 @@ export type UiEvent =
   | { type: "diff"; diffText: string }
   | { type: "warning"; message: string }
   | { type: "error"; message: string };
+
+export type UiEvent = TurnEvent | LegacyUiEvent;

@@ -177,6 +177,7 @@ export class HostExecutionBackend implements ExecutionBackend {
     opts?: {
       cwd?: string;
       timeoutMs?: number;
+      streamOutput?: boolean;
       onLine?: (line: string) => void;
       signal?: AbortSignal;
     },
