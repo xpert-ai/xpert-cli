@@ -8,6 +8,7 @@ import { runRepl } from "./repl.js";
 import { runAgentTurn } from "./agent-loop.js";
 import { runInterruptibleTurn, TurnCancelledError } from "./runtime/turn-control.js";
 import { UiRenderer } from "./ui/renderer.js";
+import { resolveCliExecutionMode } from "./ui/mode.js";
 
 interface GlobalOptions {
   cwd?: string;
@@ -52,8 +53,13 @@ export async function runCli(argv: string[]): Promise<void> {
 
 async function runMain(options: GlobalOptions): Promise<void> {
   const { config, sessionStore, session } = await prepareRuntime(options);
+  const mode = resolveCliExecutionMode({
+    prompt: options.prompt,
+    stdinIsTTY: process.stdin.isTTY,
+    stdoutIsTTY: process.stdout.isTTY,
+  });
 
-  if (options.prompt) {
+  if (mode === "single_prompt") {
     const ui = new UiRenderer();
     try {
       const nextSession = await runInterruptibleTurn(
@@ -86,6 +92,12 @@ async function runMain(options: GlobalOptions): Promise<void> {
   }
 
   await sessionStore.save(session);
+  if (mode === "interactive_ink") {
+    const { runInteractiveApp } = await import("./interactive.js");
+    await runInteractiveApp({ config, session, sessionStore });
+    return;
+  }
+
   await runRepl({ config, session, sessionStore });
 }
 
@@ -103,6 +115,18 @@ async function runResume(sessionId: string | undefined, options: GlobalOptions):
   session.cwd = config.cwd;
   session.projectRoot = config.projectRoot;
   await sessionStore.save(session);
+
+  if (
+    resolveCliExecutionMode({
+      stdinIsTTY: process.stdin.isTTY,
+      stdoutIsTTY: process.stdout.isTTY,
+    }) === "interactive_ink"
+  ) {
+    const { runInteractiveApp } = await import("./interactive.js");
+    await runInteractiveApp({ config, session, sessionStore });
+    return;
+  }
+
   await runRepl({ config, session, sessionStore });
 }
 

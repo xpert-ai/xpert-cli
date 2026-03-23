@@ -4,11 +4,16 @@ Local-first terminal coding agent MVP for the `xpert` platform.
 
 ## What Works
 
-- `xpert` interactive mode
+- `xpert` interactive TTY mode with a minimal Ink TUI
 - `xpert -p "..."` single-turn mode
 - `xpert auth status`
 - `xpert doctor`
 - `xpert resume [sessionId]`
+- Interactive slash commands:
+  - `/status`
+  - `/tools`
+  - `/session`
+  - `/exit`
 - Local tools:
   - `Read`
   - `Glob`
@@ -88,6 +93,14 @@ Interactive:
 pnpm --dir xpert-cli --filter @xpert-ai/xpert-cli dev
 ```
 
+When both `stdin` and `stdout` are real TTYs, interactive mode now starts a minimal Ink-based TUI with:
+
+- history output
+- current pending turn output
+- composer input
+- footer status
+- local slash commands for `/status`, `/tools`, `/session`, and `/exit`
+
 Or after build:
 
 ```bash
@@ -99,6 +112,8 @@ Single prompt:
 ```bash
 node packages/cli/dist/index.js -p "Read src/index.ts and summarize it"
 ```
+
+`-p` and non-TTY flows keep the existing text renderer and do not start Ink.
 
 Resume latest session:
 
@@ -120,6 +135,17 @@ Press Ctrl+C once
 ```
 
 This cancels the current run or local tool execution and drops back to `xpert>`.
+
+## Slash Commands
+
+Inside the Ink interactive TTY UI:
+
+- `/status` shows current cwd, project root, session identifiers, approval mode, git summary, recent files, and recent tool calls
+- `/tools` shows the local tool registry plus recent and failed tool-call summaries
+- `/session` shows a readable summary of recent session turns from local turn transcripts
+- `/exit` closes the interactive session
+
+These commands are resolved locally from runtime state and do not call the model.
 
 ## Demo Flow
 
@@ -206,4 +232,10 @@ npm install --prefix "$TMP_DIR" -g ./xpert-ai-xpert-cli-$(node -p "require('./pa
   - `XPERT.md` content is truncated
   - `git status --short` is line-limited
   - recent files and tool-call summaries are count-limited
-- No heavy TUI, no MCP, no repo map, no plugin ecosystem in this MVP.
+- The Ink UI is intentionally minimal:
+  - no alternate buffer mode
+  - no mouse support
+  - no vim mode
+  - no theme system
+  - no background shell panel
+  - no large dialog framework

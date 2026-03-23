@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BytesLineDecoder, SSEDecoder } from "../sdk/sse.js";
+import { BytesLineDecoder, SSEDecoder, iterateSseResponse } from "../sdk/sse.js";
 
 describe("SSEDecoder", () => {
   it("falls back to plain text when event data is not JSON", async () => {
@@ -31,5 +31,28 @@ describe("SSEDecoder", () => {
         data: "message: Required",
       },
     ]);
+  });
+
+  it("cancels an in-flight SSE reader when the signal aborts", async () => {
+    let cancelled = false;
+
+    const source = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const response = new Response(source);
+    const controller = new AbortController();
+    const iterator = iterateSseResponse(response, {
+      signal: controller.signal,
+    });
+
+    const nextChunk = iterator.next();
+    controller.abort();
+
+    await expect(nextChunk).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    expect(cancelled).toBe(true);
   });
 });

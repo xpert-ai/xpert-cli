@@ -24,4 +24,32 @@ describe("runInterruptibleTurn", () => {
     await expect(execution).rejects.toBeInstanceOf(TurnCancelledError);
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
+
+  it("exposes an explicit cancel handle for raw-input UIs", async () => {
+    const onCancel = vi.fn();
+    let cancel: (() => void) | undefined;
+
+    const execution = runInterruptibleTurn(
+      (signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => reject(signal.reason),
+            { once: true },
+          );
+        }),
+      {
+        onCancel,
+        onStart: (handle) => {
+          cancel = handle.cancel;
+        },
+      },
+    );
+
+    expect(cancel).toBeTypeOf("function");
+    cancel?.();
+
+    await expect(execution).rejects.toBeInstanceOf(TurnCancelledError);
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
 });

@@ -179,7 +179,7 @@ export class XpertSdkClient {
 
     params.onRunCreated?.(getRunMetadataFromResponse(response));
 
-    return iterateSseResponse(response);
+    return iterateSseResponse(response, { signal: params.signal });
   }
 
   private buildHeaders(): Record<string, string> {

@@ -1,0 +1,30 @@
+import { Box, Text } from "ink";
+
+export function Composer(props: {
+  value: string;
+  turnState: "idle" | "running" | "waiting";
+}) {
+  if (props.turnState === "running") {
+    return (
+      <Box marginTop={1}>
+        <Text dimColor>running... Press Ctrl+C to cancel, twice to exit.</Text>
+      </Box>
+    );
+  }
+
+  if (props.turnState === "waiting") {
+    return (
+      <Box marginTop={1}>
+        <Text dimColor>waiting for permission response... Press Ctrl+C to cancel.</Text>
+      </Box>
+    );
+  }
+
+  return (
+    <Box marginTop={1}>
+      <Text color="cyan">xpert&gt; </Text>
+      {props.value ? <Text>{props.value}</Text> : <Text dimColor>/status /tools /session /exit</Text>}
+      <Text>█</Text>
+    </Box>
+  );
+}

@@ -5,21 +5,40 @@ export class TurnCancelledError extends Error {
   }
 }
 
+export interface InterruptibleTurnHandle {
+  signal: AbortSignal;
+  cancel: () => void;
+}
+
 export async function runInterruptibleTurn<T>(
   run: (signal: AbortSignal) => Promise<T>,
-  options?: { onCancel?: () => void },
+  options?: {
+    onCancel?: () => void;
+    onStart?: (handle: InterruptibleTurnHandle) => void;
+  },
 ): Promise<T> {
   const controller = new AbortController();
+  let cancelled = false;
 
-  const onSigint = () => {
-    if (controller.signal.aborted) {
+  const cancel = () => {
+    if (cancelled || controller.signal.aborted) {
       return;
     }
+
+    cancelled = true;
     controller.abort(createAbortError());
     options?.onCancel?.();
   };
 
+  const onSigint = () => {
+    cancel();
+  };
+
   process.on("SIGINT", onSigint);
+  options?.onStart?.({
+    signal: controller.signal,
+    cancel,
+  });
 
   try {
     return await run(controller.signal);

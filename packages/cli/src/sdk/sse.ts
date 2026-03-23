@@ -1,3 +1,5 @@
+import { createAbortError } from "../runtime/turn-control.js";
+
 const CR = "\r".charCodeAt(0);
 const LF = "\n".charCodeAt(0);
 const NULL = "\0".charCodeAt(0);
@@ -164,7 +166,10 @@ export function SSEDecoder() {
   });
 }
 
-export async function* iterateSseResponse(response: Response): AsyncGenerator<SseChunk> {
+export async function* iterateSseResponse(
+  response: Response,
+  options?: { signal?: AbortSignal },
+): AsyncGenerator<SseChunk> {
   const body = response.body;
   if (!body) {
     return;
@@ -172,10 +177,22 @@ export async function* iterateSseResponse(response: Response): AsyncGenerator<Ss
 
   const stream = body.pipeThrough(BytesLineDecoder()).pipeThrough(SSEDecoder());
   const reader = stream.getReader();
+  const signal = options?.signal;
+  const abortReader = () => {
+    void reader.cancel(getAbortReason(signal));
+  };
+
+  if (signal?.aborted) {
+    throw getAbortReason(signal);
+  }
+
+  signal?.addEventListener("abort", abortReader, { once: true });
 
   try {
     while (true) {
+      throwIfAborted(signal);
       const { done, value } = await reader.read();
+      throwIfAborted(signal);
       if (done) {
         break;
       }
@@ -185,6 +202,7 @@ export async function* iterateSseResponse(response: Response): AsyncGenerator<Ss
       }
     }
   } finally {
+    signal?.removeEventListener("abort", abortReader);
     reader.releaseLock();
   }
 }
@@ -208,4 +226,14 @@ function decodeArrays(decoder: InstanceType<typeof TextDecoder>, data: ArrayLike
   } catch {
     return text;
   }
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw getAbortReason(signal);
+  }
+}
+
+function getAbortReason(signal?: AbortSignal): Error {
+  return signal?.reason instanceof Error ? signal.reason : createAbortError();
 }
