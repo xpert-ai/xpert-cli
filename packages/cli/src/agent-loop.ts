@@ -29,6 +29,7 @@ import { adaptRunStream } from "./sdk/run-stream.js";
 import { XpertSdkClient } from "./sdk/client.js";
 import {
   formatCliError,
+  isXpertCliRequestError,
   normalizeSdkRequestError,
 } from "./sdk/request-errors.js";
 import { createToolRegistry } from "./tools/registry.js";
@@ -115,8 +116,9 @@ export async function runAgentTurn(options: {
 
     let pendingToolMessages: ClientToolMessageInput[] | null = null;
     let executionId = options.session.runId;
+    let retriedMissingThread = false;
 
-    while (true) {
+    turnLoop: while (true) {
       throwIfAborted(options.signal);
       const requestOperation = pendingToolMessages
         ? "resumeWithToolMessages"
@@ -169,6 +171,7 @@ export async function runAgentTurn(options: {
 
       const toolMessages: ClientToolMessageInput[] = [];
       let sawDone = false;
+      let retryWithFreshThread = false;
 
       for await (const event of adaptRunStream(request.stream, state)) {
         throwIfAborted(options.signal);
@@ -494,7 +497,7 @@ export async function runAgentTurn(options: {
         }
 
         if (event.type === "error") {
-          throw normalizeSdkRequestError(new Error(event.message), {
+          const normalizedError = normalizeSdkRequestError(new Error(event.message), {
             operation: requestOperation,
             apiUrl: options.config.apiUrl,
             url: request.requestUrl,
@@ -502,6 +505,27 @@ export async function runAgentTurn(options: {
             phase: "stream_event",
             preserveMessage: true,
           });
+          if (
+            requestOperation === "streamPrompt" &&
+            pendingToolMessages == null &&
+            options.session.threadId &&
+            !retriedMissingThread &&
+            isMissingRemoteThreadError(normalizedError)
+          ) {
+            retriedMissingThread = true;
+            retryWithFreshThread = true;
+            options.session.threadId = undefined;
+            options.session.runId = undefined;
+            options.session.checkpointId = undefined;
+            executionId = undefined;
+            emitTurnEvent({
+              type: "warning",
+              message: "previous remote thread was not found; retrying with a new thread",
+              code: "STALE_THREAD_RETRY",
+            });
+            break;
+          }
+          throw normalizedError;
         }
 
         if (event.type === "done") {
@@ -514,6 +538,10 @@ export async function runAgentTurn(options: {
             options.session.threadId = state.threadId;
           }
         }
+      }
+
+      if (retryWithFreshThread) {
+        continue turnLoop;
       }
 
       throwIfAborted(options.signal);
@@ -601,6 +629,14 @@ function failMissingExecutionId(): never {
 
 function failMissingThreadId(): never {
   throw new Error("Missing thread id for turn runtime");
+}
+
+function isMissingRemoteThreadError(error: unknown): boolean {
+  return (
+    isXpertCliRequestError(error) &&
+    error.kind === "not_found" &&
+    error.message.toLowerCase().includes("requested record was not found")
+  );
 }
 
 function createTurnEventExecutionBackend(

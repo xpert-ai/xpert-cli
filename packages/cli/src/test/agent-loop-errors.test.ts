@@ -1,6 +1,7 @@
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { formatCliError, XpertCliRequestError } from "../sdk/request-errors.js";
+import type { CliSessionState } from "../runtime/session-store.js";
 
 const buildRunLocalContextMock = vi.fn();
 const ensureThreadMock = vi.fn();
@@ -83,7 +84,9 @@ describe("agent loop request error handling", () => {
         recentToolCalls: [],
       },
     });
-    ensureThreadMock.mockResolvedValue("thread-1");
+    ensureThreadMock.mockImplementation(
+      async (existingThreadId?: string) => existingThreadId ?? "thread-1",
+    );
     streamPromptMock.mockImplementation(
       async (input: { onRunCreated?: (value: { runId?: string; threadId?: string }) => void }) => {
         input.onRunCreated?.({ runId: "run-1", threadId: "thread-1" });
@@ -166,6 +169,58 @@ describe("agent loop request error handling", () => {
     expect(nextSession.checkpointId).toBe("checkpoint-1");
   });
 
+  it("retries the first prompt once when the saved remote thread is missing", async () => {
+    const { runAgentTurn } = await import("../agent-loop.js");
+
+    streamPromptMock.mockReset();
+    streamPromptMock
+      .mockImplementationOnce(
+        async (input: { threadId?: string; onRunCreated?: (value: { runId?: string; threadId?: string }) => void }) => {
+          input.onRunCreated?.({ runId: "run-stale", threadId: input.threadId });
+          return {
+            requestUrl: "http://localhost:3000/api/ai/threads/thread-stale/runs/stream",
+            stream: [],
+          };
+        },
+      )
+      .mockImplementationOnce(
+        async (input: { threadId?: string; onRunCreated?: (value: { runId?: string; threadId?: string }) => void }) => {
+          input.onRunCreated?.({ runId: "run-fresh", threadId: "thread-fresh" });
+          return {
+            requestUrl: "http://localhost:3000/api/ai/threads/thread-fresh/runs/stream",
+            stream: [],
+          };
+        },
+      );
+
+    streamBatches = [
+      [{ type: "error" as const, message: "The requested record was not found" }],
+      [
+        { type: "text_delta" as const, text: "Recovered on a fresh thread." },
+        { type: "done" as const, threadId: "thread-fresh", runId: "run-fresh" },
+      ],
+    ];
+
+    const session = createSession();
+    session.threadId = "thread-stale";
+    session.runId = "run-stale";
+    session.checkpointId = "checkpoint-stale";
+
+    const nextSession = await runAgentTurn({
+      prompt: "hi",
+      config: createConfig(),
+      session,
+      interactive: false,
+    });
+
+    expect(streamPromptMock).toHaveBeenCalledTimes(2);
+    expect(streamPromptMock.mock.calls[0]?.[0]?.threadId).toBe("thread-stale");
+    expect(streamPromptMock.mock.calls[1]?.[0]?.threadId).toBeUndefined();
+    expect(nextSession.threadId).toBe("thread-fresh");
+    expect(nextSession.runId).toBe("run-fresh");
+    expect(nextSession.checkpointId).toBe("checkpoint-1");
+  });
+
   it("preserves explicit backend stream errors on the first run", async () => {
     const { runAgentTurn } = await import("../agent-loop.js");
 
@@ -235,7 +290,7 @@ function createConfig() {
   };
 }
 
-function createSession() {
+function createSession(): CliSessionState {
   const now = new Date().toISOString();
   return {
     sessionId: "session-1",

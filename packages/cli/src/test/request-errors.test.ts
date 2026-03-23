@@ -77,6 +77,21 @@ describe("request error normalization", () => {
     expect(protocol.kind).toBe("protocol_error");
   });
 
+  it("maps explicit missing-record stream messages to not_found", () => {
+    const normalized = normalizeSdkRequestError(
+      new Error("The requested record was not found"),
+      {
+        operation: "streamPrompt",
+        apiUrl: "http://localhost:3000/api/ai",
+        phase: "stream_event",
+        preserveMessage: true,
+      },
+    );
+
+    expect(normalized.kind).toBe("not_found");
+    expect(normalized.message).toBe("The requested record was not found");
+  });
+
   it("distinguishes SSE connect failures from stream interruptions", () => {
     const connectFailure = normalizeSdkRequestError(
       new Error("socket hang up"),
@@ -128,7 +143,7 @@ describe("request error normalization", () => {
       preserveMessage: true,
     });
 
-    expect(normalized.kind).toBe("request_failed");
+    expect(normalized.kind).toBe("not_found");
     expect(normalized.message).toBe("assistant not found");
     expect(formatCliError(normalized)).not.toContain("run stream was interrupted");
   });

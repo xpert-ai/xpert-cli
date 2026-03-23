@@ -163,6 +163,10 @@ function classifyRequestFailure(input: {
     return "request_failed";
   }
 
+  if (looksLikeNotFoundMessage(input.rawMessage)) {
+    return "not_found";
+  }
+
   if (looksLikeAuthFailureMessage(input.rawMessage)) {
     return "auth_failed";
   }
@@ -437,6 +441,17 @@ function looksLikeAuthFailureMessage(rawMessage?: string): boolean {
     text.includes("invalid api key") ||
     text.includes("unauthorized") ||
     text.includes("forbidden")
+  );
+}
+
+function looksLikeNotFoundMessage(rawMessage?: string): boolean {
+  const text = rawMessage?.toLowerCase() ?? "";
+  return (
+    text === "not found" ||
+    text.includes("the requested record was not found") ||
+    text.includes("requested record was not found") ||
+    text.includes("record not found") ||
+    text.includes("assistant not found")
   );
 }
 
