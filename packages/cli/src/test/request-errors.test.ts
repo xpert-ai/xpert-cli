@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   formatCliError,
+  formatCliErrorBody,
   normalizeSdkRequestError,
   XpertCliRequestError,
 } from "../sdk/request-errors.js";
@@ -158,6 +159,19 @@ describe("request error normalization", () => {
     expect(normalized).toBeInstanceOf(XpertCliRequestError);
     expect(normalized.message).toBe("invalid XPERT_API_URL: http://localhost:3000 api/ai");
     expect(formatCliError(normalized)).toContain("detail: XPERT_API_URL=http://localhost:3000 api/ai");
+  });
+
+  it("can render request errors without a duplicated error prefix for Ink history", () => {
+    const normalized = normalizeSdkRequestError(new Error("The requested record was not found"), {
+      operation: "streamPrompt",
+      apiUrl: "http://localhost:3000/api/ai",
+      phase: "stream_event",
+      preserveMessage: true,
+    });
+
+    expect(formatCliError(normalized)).toContain("error: The requested record was not found");
+    expect(formatCliErrorBody(normalized)).toContain("The requested record was not found");
+    expect(formatCliErrorBody(normalized)).not.toContain("error: The requested record was not found");
   });
 });
 

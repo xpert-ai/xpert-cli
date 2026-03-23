@@ -84,6 +84,11 @@ export function formatCliError(error: unknown): string {
   return String(error);
 }
 
+export function formatCliErrorBody(error: unknown): string {
+  const formatted = formatCliError(error);
+  return formatted.replace(/^error:\s*/, "");
+}
+
 export function normalizeSdkRequestError(
   error: unknown,
   input: NormalizeSdkRequestErrorInput,

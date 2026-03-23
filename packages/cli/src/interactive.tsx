@@ -5,7 +5,7 @@ import type { ResolvedXpertCliConfig } from "@xpert-cli/contracts";
 import { runAgentTurn } from "./agent-loop.js";
 import { buildRunLocalContext } from "./context/run-context.js";
 import { runInterruptibleTurn, TurnCancelledError } from "./runtime/turn-control.js";
-import { formatCliError } from "./sdk/request-errors.js";
+import { formatCliErrorBody } from "./sdk/request-errors.js";
 import {
   getNextTurnLifecycleState,
   type TurnEvent,
@@ -249,9 +249,11 @@ function InteractiveApp(props: {
       if (error instanceof TurnCancelledError) {
         await props.sessionStore.save(sessionRef.current);
       } else {
+        commitPending();
+        setNotice(undefined);
         addHistoryItem({
           type: "error",
-          text: formatCliError(error),
+          text: formatCliErrorBody(error),
         });
         await props.sessionStore.save(sessionRef.current);
       }

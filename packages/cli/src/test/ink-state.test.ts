@@ -137,4 +137,18 @@ describe("Ink UI state mapping", () => {
     });
     expect(state).toBe("cancelled");
   });
+
+  it("keeps stale-thread retry warnings out of Ink pending history", () => {
+    let pending = createEmptyPendingTurn();
+
+    pending = applyTurnEvent(pending, {
+      type: "warning",
+      message: "previous remote thread was not found; retrying with a new thread",
+      code: "STALE_THREAD_RETRY",
+      sequence: 1,
+      at: "2026-03-23T00:00:01.000Z",
+    });
+
+    expect(pending.entries).toEqual([]);
+  });
 });

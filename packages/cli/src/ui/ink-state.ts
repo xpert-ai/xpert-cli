@@ -50,6 +50,9 @@ export function applyTurnEvent(
         summary: event.summary,
       });
     case "warning":
+      if ("code" in event && event.code === "STALE_THREAD_RETRY") {
+        return pending;
+      }
       return pushPendingItem(pending, {
         type: "warning",
         text: event.message,
