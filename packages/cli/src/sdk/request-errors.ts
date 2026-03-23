@@ -21,7 +21,8 @@ export interface NormalizeSdkRequestErrorInput {
   method?: string;
   statusCode?: number;
   responseBody?: string;
-  phase?: "request" | "sse_connect" | "stream";
+  phase?: "request" | "sse_connect" | "stream" | "stream_event";
+  preserveMessage?: boolean;
 }
 
 export class XpertCliRequestError extends Error {
@@ -110,6 +111,8 @@ export function normalizeSdkRequestError(
     apiUrl,
     statusCode,
     invalidUrl,
+    rawMessage,
+    preserveMessage: input.preserveMessage ?? false,
   });
   const detail = buildDetail({
     kind,
@@ -119,6 +122,7 @@ export function normalizeSdkRequestError(
     responseSummary,
     rawMessage,
     invalidUrl,
+    preserveMessage: input.preserveMessage ?? false,
   });
 
   return new XpertCliRequestError(
@@ -207,12 +211,18 @@ function buildPrimaryMessage(
     apiUrl?: string;
     statusCode?: number;
     invalidUrl?: boolean;
+    rawMessage?: string;
+    preserveMessage: boolean;
   },
 ): string {
   const statusSuffix = input.statusCode ? ` (${input.statusCode})` : "";
   const targetSuffix = input.apiUrl ? ` at ${input.apiUrl}` : "";
   const forTargetSuffix = input.apiUrl ? ` for ${input.apiUrl}` : "";
   const action = describeOperation(input.operation);
+
+  if (input.preserveMessage && input.rawMessage && !isGenericMessage(input.rawMessage)) {
+    return input.rawMessage;
+  }
 
   switch (kind) {
     case "service_unavailable":
@@ -249,6 +259,7 @@ function buildDetail(input: {
   responseSummary?: string;
   rawMessage?: string;
   invalidUrl?: boolean;
+  preserveMessage: boolean;
 }): string | undefined {
   if (input.kind === "request_failed" && input.apiUrl && input.invalidUrl) {
     return `XPERT_API_URL=${input.apiUrl}`;
@@ -260,6 +271,10 @@ function buildDetail(input: {
       : input.url
     : undefined;
   const reason = summarizeResponseBody(input.responseSummary ?? input.rawMessage);
+
+  if (input.preserveMessage && requestTarget) {
+    return clipDetail(requestTarget);
+  }
 
   if (requestTarget && reason && !reason.includes(requestTarget)) {
     return clipDetail(`${requestTarget}: ${reason}`);

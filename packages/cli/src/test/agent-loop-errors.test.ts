@@ -166,6 +166,58 @@ describe("agent loop request error handling", () => {
     expect(nextSession.checkpointId).toBe("checkpoint-1");
   });
 
+  it("preserves explicit backend stream errors on the first run", async () => {
+    const { runAgentTurn } = await import("../agent-loop.js");
+
+    streamBatches = [[{ type: "error" as const, message: "assistant not found" }]];
+
+    await expect(
+      runAgentTurn({
+        prompt: "Inspect the repo.",
+        config: createConfig(),
+        session: createSession(),
+        interactive: false,
+      }),
+    ).rejects.toSatisfy((error: unknown) => {
+      expect(error).toBeInstanceOf(XpertCliRequestError);
+      expect(formatCliError(error)).toContain("error: assistant not found");
+      expect(formatCliError(error)).not.toContain("run stream was interrupted");
+      return true;
+    });
+  });
+
+  it("preserves explicit backend stream errors on resume", async () => {
+    const { runAgentTurn } = await import("../agent-loop.js");
+
+    streamBatches = [
+      [
+        {
+          type: "tool_call" as const,
+          toolName: "Read",
+          callId: "call-1",
+          args: { path: "README.md" },
+        },
+      ],
+      [{ type: "error" as const, message: "resume payload invalid" }],
+    ];
+
+    await expect(
+      runAgentTurn({
+        prompt: "Read README.md",
+        config: createConfig(),
+        session: createSession(),
+        interactive: false,
+      }),
+    ).rejects.toSatisfy((error: unknown) => {
+      expect(error).toBeInstanceOf(XpertCliRequestError);
+      expect((error as XpertCliRequestError).kind).toBe("resume_failed");
+      expect(formatCliError(error)).toContain("error: resume payload invalid");
+      expect(formatCliError(error)).not.toContain(
+        "tool results could not be resumed to the current run",
+      );
+      return true;
+    });
+  });
 });
 
 function createConfig() {

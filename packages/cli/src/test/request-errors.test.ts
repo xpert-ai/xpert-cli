@@ -118,6 +118,21 @@ describe("request error normalization", () => {
     );
   });
 
+  it("preserves explicit stream-event messages instead of rewriting them as interruptions", () => {
+    const normalized = normalizeSdkRequestError(new Error("assistant not found"), {
+      operation: "streamPrompt",
+      apiUrl: "http://localhost:3000/api/ai",
+      url: "http://localhost:3000/api/ai/threads/thread-1/runs/stream",
+      method: "POST",
+      phase: "stream_event",
+      preserveMessage: true,
+    });
+
+    expect(normalized.kind).toBe("request_failed");
+    expect(normalized.message).toBe("assistant not found");
+    expect(formatCliError(normalized)).not.toContain("run stream was interrupted");
+  });
+
   it("formats invalid API URL errors with explicit config guidance", () => {
     const normalized = normalizeSdkRequestError(new TypeError("Invalid URL"), {
       operation: "streamPrompt",

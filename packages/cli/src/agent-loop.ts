@@ -499,7 +499,8 @@ export async function runAgentTurn(options: {
             apiUrl: options.config.apiUrl,
             url: request.requestUrl,
             method: "POST",
-            phase: "stream",
+            phase: "stream_event",
+            preserveMessage: true,
           });
         }
 
