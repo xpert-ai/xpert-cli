@@ -23,7 +23,11 @@ export function Composer(props: {
   return (
     <Box marginTop={1}>
       <Text color="cyan">xpert&gt; </Text>
-      {props.value ? <Text>{props.value}</Text> : <Text dimColor>/status /tools /session /exit</Text>}
+      {props.value ? (
+        <Text>{props.value}</Text>
+      ) : (
+        <Text dimColor>/status /tools /session /exit | Up/Down history</Text>
+      )}
       <Text>█</Text>
     </Box>
   );

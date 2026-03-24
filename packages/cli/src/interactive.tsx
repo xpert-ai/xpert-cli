@@ -25,6 +25,7 @@ import { applyTurnEvent } from "./ui/ink-state.js";
 import { InkUiSink } from "./ui/ink-sink.js";
 import { InlinePermissionController } from "./ui/inline-permission.js";
 import { resolveCtrlCAction } from "./ui/ctrl-c.js";
+import { createInputHistoryController } from "./ui/input-history.js";
 import { Composer } from "./ui/ink/composer.js";
 import { Footer } from "./ui/ink/footer.js";
 import { MainContent } from "./ui/ink/main-content.js";
@@ -35,6 +36,11 @@ import {
 } from "./ui/input-buffer.js";
 
 const DOUBLE_CTRL_C_WINDOW_MS = 1200;
+
+type InteractiveNotice = {
+  level: "info" | "warning" | "error";
+  message: string;
+};
 
 export async function runInteractiveApp(options: {
   config: ResolvedXpertCliConfig;
@@ -88,8 +94,9 @@ function InteractiveApp(props: {
     permissionController.getState(),
   );
   const [gitSummary, setGitSummary] = useState("git unknown");
-  const [notice, setNotice] = useState<string>();
+  const [notice, setNotice] = useState<InteractiveNotice>();
   const inputBuffer = useMemo(() => createInputBufferController(setInput), []);
+  const inputHistory = useMemo(() => createInputHistoryController(), []);
 
   useEffect(() => {
     sessionRef.current = session;
@@ -145,7 +152,10 @@ function InteractiveApp(props: {
         setGitSummary(summarizeGit(localContext.git));
       } catch (error) {
         setGitSummary(`git error`);
-        setNotice(error instanceof Error ? error.message : String(error));
+        setNotice({
+          level: "error",
+          message: error instanceof Error ? error.message : String(error),
+        });
       }
     },
     [props.config],
@@ -166,7 +176,7 @@ function InteractiveApp(props: {
       new InkUiSink({
         dispatch: appendTurnEvent,
         onNotice: ({ level, message }) => {
-          setNotice(message);
+          setNotice({ level, message });
         },
       }),
     [appendTurnEvent],
@@ -196,6 +206,7 @@ function InteractiveApp(props: {
       type: "user_prompt",
       text: prompt,
     });
+    inputHistory.push(prompt);
 
     if (prompt.startsWith("/")) {
       const result = await runSlashCommand(prompt, {
@@ -233,7 +244,10 @@ function InteractiveApp(props: {
           }),
         {
           onCancel: () => {
-            setNotice("cancelled current turn");
+            setNotice({
+              level: "info",
+              message: "cancelled current turn",
+            });
           },
           onStart: (handle) => {
             cancelActiveTurnRef.current = handle.cancel;
@@ -281,6 +295,7 @@ function InteractiveApp(props: {
     toolRegistry,
     turnLifecycleState,
     permissionState,
+    inputHistory,
     uiSink,
   ]);
 
@@ -301,7 +316,10 @@ function InteractiveApp(props: {
         windowMs: DOUBLE_CTRL_C_WINDOW_MS,
       });
       lastCtrlCAtRef.current = action.lastCtrlCAt;
-      setNotice(action.notice);
+      setNotice({
+        level: "info",
+        message: action.notice,
+      });
       exitAfterTurnRef.current = action.exitAfterTurn;
 
       if (action.shouldExitNow) {
@@ -338,6 +356,16 @@ function InteractiveApp(props: {
       return;
     }
 
+    if (key.upArrow) {
+      inputBuffer.setValue(inputHistory.previous(inputBuffer.getValue()));
+      return;
+    }
+
+    if (key.downArrow) {
+      inputBuffer.setValue(inputHistory.next(inputBuffer.getValue()));
+      return;
+    }
+
     if (key.return) {
       lastCtrlCAtRef.current = null;
       void submitPrompt();
@@ -345,6 +373,7 @@ function InteractiveApp(props: {
     }
 
     if (key.backspace || key.delete) {
+      inputHistory.resetBrowsing();
       inputBuffer.backspace();
       return;
     }
@@ -359,6 +388,7 @@ function InteractiveApp(props: {
       lastCtrlCAtRef.current = null;
       const chunk = parseInputChunk(value);
       if (chunk.text) {
+        inputHistory.resetBrowsing();
         inputBuffer.append(chunk.text);
       }
       if (chunk.submit) {
@@ -376,6 +406,7 @@ function InteractiveApp(props: {
         cwd={session.cwd}
         git={gitSummary}
         sessionId={session.sessionId}
+        assistantId={session.assistantId ?? props.config.assistantId}
         approvalMode={props.config.approvalMode}
         turnState={turnState}
         notice={notice}

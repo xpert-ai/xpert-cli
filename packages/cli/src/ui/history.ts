@@ -1,14 +1,38 @@
+import type { RiskLevel } from "@xpert-cli/contracts";
+import type { ToolCompletionStatus } from "../runtime/turn-events.js";
+
+interface ToolCallEntryBase {
+  callId?: string;
+  toolName: string;
+  target?: string;
+  argsSummary?: string;
+}
+
+interface ToolNoticeEntryBase {
+  callId?: string;
+  toolName?: string;
+  code?: string;
+  text: string;
+}
+
 export type UiHistoryItem =
   | { id: string; type: "info"; text: string }
   | { id: string; type: "user_prompt"; text: string }
   | { id: string; type: "assistant_text"; text: string }
   | { id: string; type: "reasoning"; text: string }
-  | { id: string; type: "tool_call"; toolName: string; target?: string }
-  | { id: string; type: "tool_result"; toolName: string; summary: string }
-  | { id: string; type: "bash_line"; text: string }
-  | { id: string; type: "diff"; text: string }
-  | { id: string; type: "warning"; text: string }
-  | { id: string; type: "error"; text: string }
+  | ({ id: string; type: "tool_call" } & ToolCallEntryBase)
+  | {
+      id: string;
+      type: "tool_result";
+      callId?: string;
+      toolName: string;
+      summary: string;
+      status: ToolCompletionStatus;
+    }
+  | { id: string; type: "bash_line"; callId?: string; toolName?: string; text: string }
+  | { id: string; type: "diff"; callId?: string; toolName?: string; path?: string; text: string }
+  | ({ id: string; type: "warning" } & ToolNoticeEntryBase)
+  | ({ id: string; type: "error" } & ToolNoticeEntryBase)
   | { id: string; type: "status_view"; title: string; lines: string[] }
   | { id: string; type: "tools_view"; title: string; lines: string[] }
   | { id: string; type: "session_view"; title: string; lines: string[] };
@@ -18,12 +42,18 @@ export type UiHistoryItemInput =
   | { type: "user_prompt"; text: string }
   | { type: "assistant_text"; text: string }
   | { type: "reasoning"; text: string }
-  | { type: "tool_call"; toolName: string; target?: string }
-  | { type: "tool_result"; toolName: string; summary: string }
-  | { type: "bash_line"; text: string }
-  | { type: "diff"; text: string }
-  | { type: "warning"; text: string }
-  | { type: "error"; text: string }
+  | ({ type: "tool_call" } & ToolCallEntryBase)
+  | {
+      type: "tool_result";
+      callId?: string;
+      toolName: string;
+      summary: string;
+      status: ToolCompletionStatus;
+    }
+  | { type: "bash_line"; callId?: string; toolName?: string; text: string }
+  | { type: "diff"; callId?: string; toolName?: string; path?: string; text: string }
+  | ({ type: "warning" } & ToolNoticeEntryBase)
+  | ({ type: "error" } & ToolNoticeEntryBase)
   | { type: "status_view"; title: string; lines: string[] }
   | { type: "tools_view"; title: string; lines: string[] }
   | { type: "session_view"; title: string; lines: string[] };
@@ -31,12 +61,39 @@ export type UiHistoryItemInput =
 export type PendingTurnEntry =
   | { type: "assistant_text"; text: string }
   | { type: "reasoning"; text: string }
-  | { type: "tool_call"; toolName: string; target?: string }
-  | { type: "tool_result"; toolName: string; summary: string }
-  | { type: "bash_line"; text: string }
-  | { type: "diff"; text: string }
-  | { type: "warning"; text: string }
-  | { type: "error"; text: string };
+  | ({ type: "tool_call" } & ToolCallEntryBase)
+  | {
+      type: "permission_requested";
+      callId: string;
+      toolName: string;
+      riskLevel: RiskLevel;
+      scope?: string;
+      target?: string;
+      reason?: string;
+    }
+  | {
+      type: "permission_resolved";
+      callId: string;
+      toolName: string;
+      riskLevel: RiskLevel;
+      scope?: string;
+      allowed: boolean;
+      decision: string;
+      remembered?: boolean;
+      target?: string;
+      reason?: string;
+    }
+  | {
+      type: "tool_result";
+      callId?: string;
+      toolName: string;
+      summary: string;
+      status: ToolCompletionStatus;
+    }
+  | { type: "bash_line"; callId?: string; toolName?: string; text: string }
+  | { type: "diff"; callId?: string; toolName?: string; path?: string; text: string }
+  | ({ type: "warning" } & ToolNoticeEntryBase)
+  | ({ type: "error" } & ToolNoticeEntryBase);
 
 export interface PendingTurnState {
   entries: PendingTurnEntry[];
@@ -59,34 +116,80 @@ export function materializePendingTurn(
   pending: PendingTurnState,
   createId: () => string,
 ): UiHistoryItem[] {
-  return pending.entries.map((item) => {
+  const history: UiHistoryItem[] = [];
+
+  for (const item of pending.entries) {
     switch (item.type) {
       case "assistant_text":
-        return { id: createId(), type: "assistant_text", text: item.text };
+        history.push({ id: createId(), type: "assistant_text", text: item.text });
+        continue;
       case "reasoning":
-        return { id: createId(), type: "reasoning", text: item.text };
+        history.push({ id: createId(), type: "reasoning", text: item.text });
+        continue;
       case "tool_call":
-        return {
+        history.push({
           id: createId(),
           type: "tool_call",
+          callId: item.callId,
           toolName: item.toolName,
           target: item.target,
-        };
+          argsSummary: item.argsSummary,
+        });
+        continue;
+      case "permission_requested":
+      case "permission_resolved":
+        continue;
       case "tool_result":
-        return {
+        history.push({
           id: createId(),
           type: "tool_result",
+          callId: item.callId,
           toolName: item.toolName,
           summary: item.summary,
-        };
+          status: item.status,
+        });
+        continue;
       case "bash_line":
-        return { id: createId(), type: "bash_line", text: item.text };
+        history.push({
+          id: createId(),
+          type: "bash_line",
+          callId: item.callId,
+          toolName: item.toolName,
+          text: item.text,
+        });
+        continue;
       case "diff":
-        return { id: createId(), type: "diff", text: item.text };
+        history.push({
+          id: createId(),
+          type: "diff",
+          callId: item.callId,
+          toolName: item.toolName,
+          path: item.path,
+          text: item.text,
+        });
+        continue;
       case "warning":
-        return { id: createId(), type: "warning", text: item.text };
+        history.push({
+          id: createId(),
+          type: "warning",
+          callId: item.callId,
+          toolName: item.toolName,
+          code: item.code,
+          text: item.text,
+        });
+        continue;
       case "error":
-        return { id: createId(), type: "error", text: item.text };
+        history.push({
+          id: createId(),
+          type: "error",
+          callId: item.callId,
+          toolName: item.toolName,
+          code: item.code,
+          text: item.text,
+        });
+        continue;
     }
-  });
+  }
+
+  return history;
 }

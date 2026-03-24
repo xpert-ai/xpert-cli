@@ -30,6 +30,17 @@ describe("createInputBufferController", () => {
     expect(buffer.getValue()).toBe("");
   });
 
+  it("replaces the current buffer value in one update for history navigation", () => {
+    const onChange = vi.fn();
+    const buffer = createInputBufferController(onChange);
+
+    buffer.append("draft");
+    buffer.setValue("previous prompt");
+
+    expect(buffer.getValue()).toBe("previous prompt");
+    expect(onChange).toHaveBeenLastCalledWith("previous prompt");
+  });
+
   it("treats pasted chunks that end with carriage return as a submit", () => {
     expect(parseInputChunk("/status\r")).toEqual({
       text: "/status",

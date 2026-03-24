@@ -19,35 +19,65 @@ export function applyTurnEvent(
     case "tool_call":
       return pushPendingItem(pending, {
         type: "tool_call",
+        callId: "callId" in event ? event.callId : undefined,
         toolName: event.toolName,
         target: event.target,
+        argsSummary: "argsSummary" in event ? event.argsSummary : undefined,
+      });
+    case "permission_requested":
+      return pushPendingItem(pending, {
+        type: "permission_requested",
+        callId: event.callId,
+        toolName: event.toolName,
+        riskLevel: event.riskLevel,
+        scope: event.scope,
+        target: event.target,
+        reason: event.reason,
+      });
+    case "permission_resolved":
+      return pushPendingItem(pending, {
+        type: "permission_resolved",
+        callId: event.callId,
+        toolName: event.toolName,
+        riskLevel: event.riskLevel,
+        scope: event.scope,
+        allowed: event.allowed,
+        decision: event.decision,
+        remembered: event.remembered,
+        target: event.target,
+        reason: event.reason,
       });
     case "tool_output_line":
     case "bash_line":
       return pushPendingItem(pending, {
         type: "bash_line",
+        callId: "callId" in event ? event.callId : undefined,
+        toolName: "toolName" in event ? event.toolName : undefined,
         text: event.line,
       });
     case "tool_diff":
     case "diff":
       return pushPendingItem(pending, {
         type: "diff",
+        callId: "callId" in event ? event.callId : undefined,
+        toolName: "toolName" in event ? event.toolName : undefined,
+        path: "path" in event ? event.path : undefined,
         text: event.diffText,
       });
     case "tool_completed":
-      if (event.status !== "success") {
-        return pending;
-      }
       return pushPendingItem(pending, {
         type: "tool_result",
+        callId: event.callId,
         toolName: event.toolName,
         summary: event.summary,
+        status: event.status,
       });
     case "tool_ack":
       return pushPendingItem(pending, {
         type: "tool_result",
         toolName: event.toolName,
         summary: event.summary,
+        status: "success",
       });
     case "warning":
       if ("code" in event && event.code === "STALE_THREAD_RETRY") {
@@ -55,11 +85,17 @@ export function applyTurnEvent(
       }
       return pushPendingItem(pending, {
         type: "warning",
+        callId: "callId" in event ? event.callId : undefined,
+        toolName: "toolName" in event ? event.toolName : undefined,
+        code: "code" in event ? event.code : undefined,
         text: event.message,
       });
     case "error":
       return pushPendingItem(pending, {
         type: "error",
+        callId: "callId" in event ? event.callId : undefined,
+        toolName: "toolName" in event ? event.toolName : undefined,
+        code: "code" in event ? event.code : undefined,
         text: event.message,
       });
     default:

@@ -2,6 +2,7 @@ export interface InputBufferController {
   append(chunk: string): string;
   backspace(): string;
   clear(): string;
+  setValue(next: string): string;
   getValue(): string;
   takeTrimmedValue(): string;
 }
@@ -31,6 +32,9 @@ export function createInputBufferController(
     },
     clear() {
       return sync("");
+    },
+    setValue(next) {
+      return sync(next);
     },
     getValue() {
       return value;

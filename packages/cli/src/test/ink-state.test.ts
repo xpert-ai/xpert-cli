@@ -61,9 +61,26 @@ describe("Ink UI state mapping", () => {
 
     expect(pending.entries).toEqual([
       { type: "assistant_text", text: "Planning the change." },
-      { type: "tool_call", toolName: "Read", target: "src/index.ts" },
-      { type: "bash_line", text: "1 | export const value = 1;" },
-      { type: "tool_result", toolName: "Read", summary: "read src/index.ts" },
+      {
+        type: "tool_call",
+        callId: "call-1",
+        toolName: "Read",
+        target: "src/index.ts",
+        argsSummary: "path=src/index.ts",
+      },
+      {
+        type: "bash_line",
+        callId: "call-1",
+        toolName: "Read",
+        text: "1 | export const value = 1;",
+      },
+      {
+        type: "tool_result",
+        callId: "call-1",
+        toolName: "Read",
+        summary: "read src/index.ts",
+        status: "success",
+      },
       { type: "assistant_text", text: "Inspecting tool output." },
     ]);
 
@@ -79,19 +96,25 @@ describe("Ink UI state mapping", () => {
       {
         id: "item-2",
         type: "tool_call",
+        callId: "call-1",
         toolName: "Read",
         target: "src/index.ts",
+        argsSummary: "path=src/index.ts",
       },
       {
         id: "item-3",
         type: "bash_line",
+        callId: "call-1",
+        toolName: "Read",
         text: "1 | export const value = 1;",
       },
       {
         id: "item-4",
         type: "tool_result",
+        callId: "call-1",
         toolName: "Read",
         summary: "read src/index.ts",
+        status: "success",
       },
       {
         id: "item-5",
@@ -150,5 +173,69 @@ describe("Ink UI state mapping", () => {
     });
 
     expect(pending.entries).toEqual([]);
+  });
+
+  it("materializes denied tool completions without dropping warning facts", () => {
+    let pending = createEmptyPendingTurn();
+
+    pending = applyTurnEvent(pending, {
+      type: "tool_requested",
+      callId: "call-1",
+      toolName: "Patch",
+      argsSummary: "path=src/app.ts",
+      target: "src/app.ts",
+      sequence: 1,
+      at: "2026-03-23T00:00:01.000Z",
+    });
+    pending = applyTurnEvent(pending, {
+      type: "warning",
+      callId: "call-1",
+      toolName: "Patch",
+      message: "denied Patch",
+      code: "PERMISSION_DENIED",
+      sequence: 2,
+      at: "2026-03-23T00:00:02.000Z",
+    });
+    pending = applyTurnEvent(pending, {
+      type: "tool_completed",
+      callId: "call-1",
+      toolName: "Patch",
+      argsSummary: "path=src/app.ts",
+      summary: "Permission denied",
+      status: "denied",
+      code: "PERMISSION_DENIED",
+      sequence: 3,
+      at: "2026-03-23T00:00:03.000Z",
+    });
+
+    let counter = 0;
+    const history = materializePendingTurn(pending, () => `item-${++counter}`);
+
+    expect(history).toEqual([
+      {
+        id: "item-1",
+        type: "tool_call",
+        callId: "call-1",
+        toolName: "Patch",
+        target: "src/app.ts",
+        argsSummary: "path=src/app.ts",
+      },
+      {
+        id: "item-2",
+        type: "warning",
+        callId: "call-1",
+        toolName: "Patch",
+        code: "PERMISSION_DENIED",
+        text: "denied Patch",
+      },
+      {
+        id: "item-3",
+        type: "tool_result",
+        callId: "call-1",
+        toolName: "Patch",
+        summary: "Permission denied",
+        status: "denied",
+      },
+    ]);
   });
 });
