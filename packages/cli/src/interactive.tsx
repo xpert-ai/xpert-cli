@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { Box, render, useApp, useInput } from "ink";
+import { Box, render, useApp, useInput, useStdout } from "ink";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ResolvedXpertCliConfig } from "@xpert-cli/contracts";
 import { runAgentTurn } from "./agent-loop.js";
@@ -13,7 +13,15 @@ import {
 } from "./runtime/turn-events.js";
 import type { CliSessionState, SessionStore } from "./runtime/session-store.js";
 import { createToolRegistry } from "./tools/registry.js";
-import { runSlashCommand, summarizeGit } from "./ui/commands.js";
+import {
+  buildSessionPanelData,
+  buildStatusPanelData,
+  buildToolsPanelData,
+  runSlashCommand,
+  summarizeGit,
+  type InspectorPanel,
+  type InspectorPanelData,
+} from "./ui/commands.js";
 import {
   createEmptyPendingTurn,
   materializePendingTurn,
@@ -21,6 +29,7 @@ import {
   type UiHistoryItem,
   type UiHistoryItemInput,
 } from "./ui/history.js";
+import { resolveEscapeAction, resolveInteractiveSlashCommandEffect } from "./ui/interactive-state.js";
 import { applyTurnEvent } from "./ui/ink-state.js";
 import { InkUiSink } from "./ui/ink-sink.js";
 import { InlinePermissionController } from "./ui/inline-permission.js";
@@ -34,6 +43,16 @@ import {
   createInputBufferController,
   parseInputChunk,
 } from "./ui/input-buffer.js";
+import {
+  createViewportState,
+  scrollViewportBy,
+  scrollViewportToEnd,
+  scrollViewportToStart,
+  syncViewport,
+  viewportStatesEqual,
+  type ViewportMetrics,
+} from "./ui/viewport.js";
+import { resolveInkHeights } from "./ui/ink-layout.js";
 
 const DOUBLE_CTRL_C_WINDOW_MS = 1200;
 
@@ -60,6 +79,7 @@ function InteractiveApp(props: {
   sessionStore: SessionStore;
 }) {
   const { exit } = useApp();
+  const { stdout } = useStdout();
   const toolRegistry = useMemo(() => createToolRegistry(), []);
   const permissionController = useMemo(() => new InlinePermissionController(), []);
   const historyIdRef = useRef(0);
@@ -68,6 +88,7 @@ function InteractiveApp(props: {
   const lastCtrlCAtRef = useRef<number | null>(null);
   const exitAfterTurnRef = useRef(false);
   const pendingRef = useRef<PendingTurnState>(createEmptyPendingTurn());
+  const [terminalSize, setTerminalSize] = useState(() => getTerminalSize(stdout));
   const [session, setSession] = useState(props.session);
   const [history, setHistory] = useState<UiHistoryItem[]>(() => [
     createHistoryItem("history-0", {
@@ -86,6 +107,8 @@ function InteractiveApp(props: {
   historyIdRef.current = Math.max(historyIdRef.current, history.length);
 
   const [pending, setPending] = useState<PendingTurnState>(createEmptyPendingTurn());
+  const [inspector, setInspector] = useState<InspectorPanelData | null>(null);
+  const [historyViewport, setHistoryViewport] = useState(createViewportState());
   const [input, setInput] = useState("");
   const [turnLifecycleState, setTurnLifecycleState] = useState<TurnLifecycleState | "idle">(
     "idle",
@@ -101,6 +124,17 @@ function InteractiveApp(props: {
   useEffect(() => {
     sessionRef.current = session;
   }, [session]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setTerminalSize(getTerminalSize(stdout));
+    };
+    handleResize();
+    stdout.on("resize", handleResize);
+    return () => {
+      stdout.off("resize", handleResize);
+    };
+  }, [stdout]);
 
   const nextHistoryId = useCallback((): string => {
     historyIdRef.current += 1;
@@ -151,7 +185,7 @@ function InteractiveApp(props: {
         });
         setGitSummary(summarizeGit(localContext.git));
       } catch (error) {
-        setGitSummary(`git error`);
+        setGitSummary("git error");
         setNotice({
           level: "error",
           message: error instanceof Error ? error.message : String(error),
@@ -161,9 +195,54 @@ function InteractiveApp(props: {
     [props.config],
   );
 
+  const refreshInspector = useCallback(
+    async (panel: InspectorPanel, sessionState: CliSessionState) => {
+      try {
+        switch (panel) {
+          case "status":
+            setInspector(
+              await buildStatusPanelData({
+                config: props.config,
+                session: sessionState,
+                toolRegistry,
+                presentation: "ink",
+              }),
+            );
+            return;
+          case "tools":
+            setInspector(
+              buildToolsPanelData({
+                config: props.config,
+                session: sessionState,
+                toolRegistry,
+                presentation: "ink",
+              }),
+            );
+            return;
+          case "session":
+            setInspector(buildSessionPanelData(sessionState));
+        }
+      } catch (error) {
+        setNotice({
+          level: "error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    [props.config, toolRegistry],
+  );
+
   useEffect(() => {
     void refreshStatus(session);
   }, [refreshStatus, session]);
+
+  useEffect(() => {
+    if (!inspector?.panel) {
+      return;
+    }
+
+    void refreshInspector(inspector.panel, session);
+  }, [inspector?.panel, refreshInspector, session]);
 
   useEffect(() => {
     return permissionController.subscribe((state) => {
@@ -181,6 +260,33 @@ function InteractiveApp(props: {
       }),
     [appendTurnEvent],
   );
+
+  const handleHistoryViewportMetrics = useCallback((metrics: ViewportMetrics) => {
+    setHistoryViewport((current) => {
+      const reason =
+        current.wrapWidth !== metrics.wrapWidth ||
+        current.viewportHeight !== metrics.viewportHeight
+          ? "resize"
+          : "content";
+      const next = syncViewport(current, metrics, reason);
+      return viewportStatesEqual(current, next) ? current : next;
+    });
+  }, []);
+
+  const scrollHistory = useCallback((action: "page_up" | "page_down" | "home" | "end") => {
+    setHistoryViewport((current) => {
+      switch (action) {
+        case "home":
+          return scrollViewportToStart(current);
+        case "end":
+          return scrollViewportToEnd(current);
+        case "page_up":
+          return scrollViewportBy(current, -Math.max(1, current.viewportHeight - 1));
+        case "page_down":
+          return scrollViewportBy(current, Math.max(1, current.viewportHeight - 1));
+      }
+    });
+  }, []);
 
   const exitInteractive = useCallback(async () => {
     await props.sessionStore.save(sessionRef.current);
@@ -202,10 +308,6 @@ function InteractiveApp(props: {
     }
 
     setNotice(undefined);
-    addHistoryItem({
-      type: "user_prompt",
-      text: prompt,
-    });
     inputHistory.push(prompt);
 
     if (prompt.startsWith("/")) {
@@ -213,18 +315,32 @@ function InteractiveApp(props: {
         config: props.config,
         session,
         toolRegistry,
+        presentation: "ink",
       });
+      const effect = resolveInteractiveSlashCommandEffect(result);
 
-      if (result.type === "exit") {
+      if (effect.shouldExit) {
         await exitInteractive();
         return;
       }
 
-      addHistoryItem(result.item);
+      if (effect.panel) {
+        setInspector(effect.panel);
+        await refreshStatus(session);
+        return;
+      }
+
+      if (effect.historyItem) {
+        addHistoryItem(effect.historyItem);
+      }
       await refreshStatus(session);
       return;
     }
 
+    addHistoryItem({
+      type: "user_prompt",
+      text: prompt,
+    });
     resetPending();
     setTurnLifecycleState("running");
 
@@ -286,7 +402,9 @@ function InteractiveApp(props: {
     commitPending,
     exitInteractive,
     inputBuffer,
+    inputHistory,
     permissionController,
+    permissionState,
     props.config,
     props.sessionStore,
     refreshStatus,
@@ -294,8 +412,6 @@ function InteractiveApp(props: {
     session,
     toolRegistry,
     turnLifecycleState,
-    permissionState,
-    inputHistory,
     uiSink,
   ]);
 
@@ -303,12 +419,17 @@ function InteractiveApp(props: {
     lifecycleState: turnLifecycleState,
     permissionActive: Boolean(permissionState),
   });
+  const permissionLayout = resolveInkHeights({
+    terminalHeight: terminalSize.height,
+    permissionVisible: Boolean(permissionState),
+    permissionChoiceCount: permissionState?.choices.length ?? 0,
+    inspectorMode: "hidden",
+    inspectorLineCount: 0,
+    pendingLineCount: 0,
+  });
 
   useInput((value, key) => {
-    if (
-      key.ctrl &&
-      (value === "c" || value === "C" || value === "\u0003")
-    ) {
+    if (key.ctrl && (value === "c" || value === "C" || value === "\u0003")) {
       const action = resolveCtrlCAction({
         turnState,
         now: Date.now(),
@@ -349,6 +470,37 @@ function InteractiveApp(props: {
       if (key.escape) {
         permissionController.denySelection();
       }
+      return;
+    }
+
+    if (key.escape) {
+      const action = resolveEscapeAction({
+        permissionActive: false,
+        panelOpen: Boolean(inspector),
+      });
+      if (action === "close_panel") {
+        setInspector(null);
+        return;
+      }
+    }
+
+    if (key.pageUp) {
+      scrollHistory("page_up");
+      return;
+    }
+
+    if (key.pageDown) {
+      scrollHistory("page_down");
+      return;
+    }
+
+    if (key.home) {
+      scrollHistory("home");
+      return;
+    }
+
+    if (key.end) {
+      scrollHistory("end");
       return;
     }
 
@@ -398,17 +550,41 @@ function InteractiveApp(props: {
   });
 
   return (
-    <Box flexDirection="column">
-      <MainContent history={history} pending={pending} />
-      {permissionState ? <PermissionPrompt state={permissionState} /> : null}
-      <Composer value={input} turnState={turnState} />
+    <Box
+      flexDirection="column"
+      width={terminalSize.width}
+      height={terminalSize.height}
+      overflow="hidden"
+    >
+      <MainContent
+        terminalWidth={terminalSize.width}
+        terminalHeight={terminalSize.height}
+        permissionVisible={Boolean(permissionState)}
+        permissionChoiceCount={permissionState?.choices.length ?? 0}
+        history={history}
+        pending={pending}
+        inspector={inspector}
+        historyViewport={historyViewport}
+        onHistoryViewportMetrics={handleHistoryViewportMetrics}
+      />
+      {permissionState ? (
+        <PermissionPrompt
+          width={terminalSize.width}
+          height={permissionLayout.permissionHeight}
+          state={permissionState}
+        />
+      ) : null}
+      <Composer width={terminalSize.width} value={input} turnState={turnState} />
       <Footer
+        width={terminalSize.width}
         cwd={session.cwd}
         git={gitSummary}
         sessionId={session.sessionId}
         assistantId={session.assistantId ?? props.config.assistantId}
         approvalMode={props.config.approvalMode}
         turnState={turnState}
+        followLatest={historyViewport.follow}
+        inspectorPanel={inspector?.panel ?? null}
         notice={notice}
       />
     </Box>
@@ -437,4 +613,14 @@ function toInteractiveTurnState(
   }
 
   return "idle";
+}
+
+function getTerminalSize(stdout: NodeJS.WriteStream): {
+  width: number;
+  height: number;
+} {
+  return {
+    width: Math.max(40, stdout.columns ?? process.stdout.columns ?? 80),
+    height: Math.max(8, stdout.rows ?? process.stdout.rows ?? 24),
+  };
 }

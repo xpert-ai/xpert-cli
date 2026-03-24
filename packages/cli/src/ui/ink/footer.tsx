@@ -1,14 +1,18 @@
 import path from "node:path";
 import { Box, Text } from "ink";
 import type { ApprovalMode } from "@xpert-cli/contracts";
+import type { InspectorPanel } from "../commands.js";
 
 export function Footer(props: {
+  width: number;
   cwd: string;
   git: string;
   sessionId: string;
   assistantId?: string;
   approvalMode: ApprovalMode;
   turnState: "idle" | "running" | "waiting_permission";
+  followLatest: boolean;
+  inspectorPanel: InspectorPanel | null;
   notice?: {
     level: "info" | "warning" | "error";
     message: string;
@@ -19,6 +23,8 @@ export function Footer(props: {
     shortPath(props.cwd),
     `s ${props.sessionId.slice(0, 8)}`,
     `turn ${formatTurnState(props.turnState)}`,
+    `view ${props.followLatest ? "follow" : "scroll"}`,
+    `panel ${props.inspectorPanel ?? "off"}`,
     `approval ${props.approvalMode}`,
     `git ${clip(props.git, 28)}`,
     `asst ${clip(props.assistantId ?? "(unconfigured)", 18)}`,
@@ -26,18 +32,60 @@ export function Footer(props: {
   const notice = props.notice
     ? `${props.notice.level === "info" ? "notice" : props.notice.level}: ${clip(props.notice.message, 48)}`
     : undefined;
+  const line = buildFooterLine({
+    width: props.width,
+    base: parts.join(" | "),
+    notice,
+  });
 
   return (
-    <Box marginTop={1}>
-      <Text dimColor>{parts.join(" | ")}</Text>
-      {notice ? (
+    <Box width={props.width} overflow="hidden">
+      <Text dimColor>{line.base}</Text>
+      {line.notice && line.base ? (
         <>
           <Text dimColor> | </Text>
-          <Text color={getNoticeColor(props.notice?.level)}>{notice}</Text>
+          <Text color={getNoticeColor(props.notice?.level)}>{line.notice}</Text>
         </>
+      ) : line.notice ? (
+        <Text color={getNoticeColor(props.notice?.level)}>{line.notice}</Text>
       ) : null}
     </Box>
   );
+}
+
+export function buildFooterLine(input: {
+  width: number;
+  base: string;
+  notice?: string;
+}): {
+  base: string;
+  notice?: string;
+} {
+  const width = Math.max(1, input.width);
+  if (!input.notice) {
+    return {
+      base: clipToWidth(input.base, width),
+    };
+  }
+
+  const noticeBudget = Math.min(
+    stringWidth(input.notice),
+    Math.max(12, Math.floor(width * 0.4)),
+  );
+  const separatorWidth = 3;
+  const availableBaseWidth = Math.max(0, width - separatorWidth - noticeBudget);
+
+  if (availableBaseWidth <= 0) {
+    return {
+      base: "",
+      notice: clipToWidth(input.notice, width),
+    };
+  }
+
+  return {
+    base: clipToWidth(input.base, availableBaseWidth),
+    notice: clipToWidth(input.notice, width - availableBaseWidth - separatorWidth),
+  };
 }
 
 function formatTurnState(value: "idle" | "running" | "waiting_permission"): string {
@@ -77,4 +125,25 @@ function clip(value: string, maxChars: number): string {
   }
 
   return `${value.slice(0, maxChars - 3)}...`;
+}
+
+function clipToWidth(value: string, width: number): string {
+  if (width <= 0) {
+    return "";
+  }
+
+  const chars = Array.from(value);
+  if (chars.length <= width) {
+    return value;
+  }
+
+  if (width === 1) {
+    return chars[0] ?? "";
+  }
+
+  return `${chars.slice(0, width - 1).join("")}…`;
+}
+
+function stringWidth(value: string): number {
+  return Array.from(value).length;
 }

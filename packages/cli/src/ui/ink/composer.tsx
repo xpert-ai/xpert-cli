@@ -1,34 +1,90 @@
 import { Box, Text } from "ink";
 
 export function Composer(props: {
+  width: number;
   value: string;
   turnState: "idle" | "running" | "waiting_permission";
 }) {
   if (props.turnState === "running") {
     return (
-      <Box marginTop={1}>
-        <Text dimColor>running... Press Ctrl+C to cancel, twice to exit.</Text>
+      <Box width={props.width} overflow="hidden">
+        <Text dimColor>{buildComposerStatusLine(props.width, "running... Ctrl+C cancels the turn.")}</Text>
       </Box>
     );
   }
 
   if (props.turnState === "waiting_permission") {
     return (
-      <Box marginTop={1}>
-        <Text dimColor>waiting for permission response... Press Ctrl+C to cancel.</Text>
+      <Box width={props.width} overflow="hidden">
+        <Text dimColor>
+          {buildComposerStatusLine(
+            props.width,
+            "waiting for permission... Esc denies, Ctrl+C aborts the turn.",
+          )}
+        </Text>
       </Box>
     );
   }
 
+  const line = buildComposerInputLine({
+    width: props.width,
+    value: props.value,
+  });
+
   return (
-    <Box marginTop={1}>
-      <Text color="cyan">xpert&gt; </Text>
-      {props.value ? (
-        <Text>{props.value}</Text>
-      ) : (
-        <Text dimColor>/status /tools /session /exit | Up/Down history</Text>
-      )}
-      <Text>█</Text>
+    <Box width={props.width} overflow="hidden">
+      <Text color="cyan">{line.prompt}</Text>
+      <Text dimColor={!props.value}>{line.body}</Text>
+      <Text>{line.cursor}</Text>
     </Box>
   );
+}
+
+const PROMPT = "xpert> ";
+const CURSOR = "█";
+const COMPOSER_PLACEHOLDER =
+  "/status /tools /session /exit | Up/Down history | PgUp/PgDn scroll";
+
+export function buildComposerInputLine(input: {
+  width: number;
+  value: string;
+}): {
+  prompt: string;
+  body: string;
+  cursor: string;
+} {
+  const width = Math.max(1, input.width);
+  const availableBodyWidth = Math.max(0, width - stringWidth(PROMPT) - stringWidth(CURSOR));
+  const source = input.value || COMPOSER_PLACEHOLDER;
+
+  return {
+    prompt: clipToWidth(PROMPT, Math.max(0, width - stringWidth(CURSOR))),
+    body: clipToWidth(source, availableBodyWidth),
+    cursor: width > stringWidth(PROMPT) ? CURSOR : "",
+  };
+}
+
+export function buildComposerStatusLine(width: number, message: string): string {
+  return clipToWidth(message, Math.max(1, width));
+}
+
+function clipToWidth(value: string, width: number): string {
+  if (width <= 0) {
+    return "";
+  }
+
+  const chars = Array.from(value);
+  if (chars.length <= width) {
+    return value;
+  }
+
+  if (width === 1) {
+    return chars[0] ?? "";
+  }
+
+  return `${chars.slice(0, width - 1).join("")}…`;
+}
+
+function stringWidth(value: string): number {
+  return Array.from(value).length;
 }
