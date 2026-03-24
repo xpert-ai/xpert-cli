@@ -181,6 +181,163 @@ describe("slash commands", () => {
       }),
     ).resolves.toEqual({ type: "exit" });
   });
+
+  it("opens /status as an Ink inspector panel from local runtime state", async () => {
+    const result = await runSlashCommand("/status", {
+      config: createConfig(),
+      session: createSession(),
+      presentation: "ink",
+      deps: {
+        buildRunLocalContext: vi.fn().mockResolvedValue({
+          cwd: "/tmp/project/packages/cli",
+          projectRoot: "/tmp/project",
+          xpertMd: { available: false, truncated: false },
+          git: {
+            available: true,
+            isRepo: true,
+            statusShort: "M packages/cli/src/cli.ts",
+            truncated: false,
+          },
+          workingSet: {
+            recentFiles: ["packages/cli/src/cli.ts"],
+            recentToolCalls: [
+              {
+                id: "call-1",
+                toolName: "Read",
+                summary: "read packages/cli/src/cli.ts",
+                status: "success",
+                createdAt: "2026-03-23T00:00:00.000Z",
+              },
+            ],
+          },
+        }),
+      },
+    });
+
+    expect(result).toMatchObject({
+      type: "panel",
+      panel: "status",
+      data: {
+        panel: "status",
+        title: "Status",
+      },
+    });
+
+    if (result.type !== "panel" || result.panel !== "status") {
+      throw new Error("Expected /status to return a status panel");
+    }
+
+    expect(result.data.sections.flatMap((section) => section.lines)).toContain(
+      "cwd: /tmp/project/packages/cli",
+    );
+    expect(result.data.sections.flatMap((section) => section.lines)).toContain(
+      "summary: dirty (1 changes)",
+    );
+  });
+
+  it("opens /tools as an Ink inspector panel from the local registry", async () => {
+    const result = await runSlashCommand("/tools", {
+      config: createConfig(),
+      session: createSession({
+        approvals: [
+          {
+            toolName: "Patch",
+            decision: "allow",
+            riskLevel: "moderate",
+            scopeType: "path",
+            path: "src/app.ts",
+            createdAt: "2026-03-23T00:00:00.000Z",
+          },
+        ],
+      }),
+      presentation: "ink",
+      toolRegistry: createToolRegistry(),
+    });
+
+    expect(result).toMatchObject({
+      type: "panel",
+      panel: "tools",
+      data: {
+        panel: "tools",
+        title: "Tools",
+      },
+    });
+
+    if (result.type !== "panel" || result.panel !== "tools") {
+      throw new Error("Expected /tools to return a tools panel");
+    }
+
+    expect(result.data.sections.flatMap((section) => section.lines)).toContain(
+      "- Read: Read a file from the local project with line numbers.",
+    );
+    expect(result.data.sections.flatMap((section) => section.lines)).toContain(
+      "- Patch allow [moderate] src/app.ts",
+    );
+  });
+
+  it("opens /session as an Ink inspector panel from local turn transcripts", async () => {
+    const result = await runSlashCommand("/session", {
+      config: createConfig(),
+      session: createSession({
+        turns: [
+          {
+            turnId: "turn-1",
+            prompt: "Summarize cli.ts",
+            startedAt: "2026-03-23T00:00:00.000Z",
+            finishedAt: "2026-03-23T00:00:10.000Z",
+            status: "completed",
+            assistantText: "I read cli.ts and summarized the main path.",
+            toolEvents: [
+              {
+                at: "2026-03-23T00:00:02.000Z",
+                callId: "call-1",
+                toolName: "Read",
+                argsSummary: "path=packages/cli/src/cli.ts",
+                resultSummary: "read packages/cli/src/cli.ts",
+                status: "success",
+              },
+            ],
+            permissionEvents: [
+              {
+                at: "2026-03-23T00:00:01.000Z",
+                toolName: "Read",
+                riskLevel: "safe",
+                decision: "safe_allow",
+                scope: "Read packages/cli/src/cli.ts",
+              },
+            ],
+            changedFiles: ["packages/cli/src/cli.ts"],
+            threadId: "thread-1",
+            runId: "run-1",
+            checkpointId: "checkpoint-1",
+          },
+        ],
+      }),
+      presentation: "ink",
+    });
+
+    expect(result).toMatchObject({
+      type: "panel",
+      panel: "session",
+      data: {
+        panel: "session",
+        title: "Session",
+      },
+    });
+
+    if (result.type !== "panel" || result.panel !== "session") {
+      throw new Error("Expected /session to return a session panel");
+    }
+
+    expect(result.data.sections[0]?.title).toContain("COMPLETED 2026-03-23T00:00:10.000Z");
+    expect(result.data.sections[0]?.lines).toContain("prompt: Summarize cli.ts");
+    expect(result.data.sections[0]?.lines).toContain(
+      "tools: Read [success] read packages/cli/src/cli.ts",
+    );
+    expect(result.data.sections[0]?.lines).toContain(
+      "permissions: Read safe_allow @ Read packages/cli/src/cli.ts",
+    );
+  });
 });
 
 function createConfig(): ResolvedXpertCliConfig {
