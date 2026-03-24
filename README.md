@@ -4,7 +4,11 @@ Local-first terminal coding agent MVP for the `xpert` platform.
 
 ## What Works
 
-- `xpert` interactive TTY mode with a minimal Ink TUI
+- `xpert` interactive TTY mode with a stable Ink TUI:
+  - transcript viewport with follow/scroll
+  - bounded current-turn / pending pane
+  - fixed composer and footer
+  - local inspector panel for `/status`, `/tools`, and `/session`
 - `xpert -p "..."` single-turn mode
 - `xpert auth status`
 - `xpert doctor`
@@ -111,13 +115,14 @@ Interactive:
 pnpm --dir xpert-cli --filter @xpert-ai/xpert-cli dev
 ```
 
-When both `stdin` and `stdout` are real TTYs, interactive mode now starts a minimal Ink-based TUI with:
+When both `stdin` and `stdout` are real TTYs, interactive mode now starts an Ink-based TUI with:
 
-- history output
-- current pending turn output
-- composer input
-- footer status
-- local slash commands for `/status`, `/tools`, `/session`, and `/exit`
+- transcript history viewport
+- bounded current-turn / pending pane
+- fixed composer input
+- fixed footer status
+- local inspector panel for `/status`, `/tools`, and `/session`
+- `PageUp` / `PageDown` / `Home` / `End` history scrolling
 
 Or after build:
 
@@ -161,12 +166,20 @@ This cancels the current run or local tool execution and drops back to `xpert>`.
 
 Inside the Ink interactive TTY UI:
 
-- `/status` shows current cwd, project root, session identifiers, approval mode, git summary, recent files, and recent tool calls
-- `/tools` shows the local tool registry plus recent and failed tool-call summaries
-- `/session` shows a readable summary of recent session turns from local turn transcripts
+- `/status` opens or refreshes the status inspector panel using local runtime state
+- `/tools` opens or refreshes the tools inspector panel using the local registry and session data
+- `/session` opens or refreshes the session inspector panel using local turn transcripts
 - `/exit` closes the interactive session
 
-These commands are resolved locally from runtime state and do not call the model.
+These commands are resolved locally from runtime state and do not call the model. In `-p` and non-TTY flows, the existing text renderer remains unchanged.
+
+## Interactive Keys
+
+- `Ctrl+C`: cancel the current turn; press again to exit
+- `Esc`: deny the active permission prompt, or close the open inspector panel
+- `PageUp` / `PageDown`: scroll transcript history
+- `Home` / `End`: jump to the start or return to live follow mode
+- `Up` / `Down`: browse input history in the composer
 
 ## Demo Flow
 

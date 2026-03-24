@@ -21,7 +21,7 @@
    - recent changed files
 10. It passes local tool schemas and structured local context through `runs.stream(..., { context: ... })`.
 11. It also prepends a hidden local-context envelope to the outbound prompt, and to the first outbound tool message on resume, so the model still sees the context even if arbitrary run `context` fields are not injected into model-visible text upstream.
-12. `agent-loop` emits structured UI events through a UI sink instead of writing directly to stdout.
+12. `agent-loop` emits structured runtime facts through a UI sink instead of writing directly to stdout.
    - `TextUiRenderer` keeps the existing line-oriented output for `-p`, non-TTY, and tests
    - `InkUiSink` maps runtime events into static history plus current pending turn state
 13. When `xpert-pro` interrupts with a client tool call, the CLI:
@@ -30,10 +30,28 @@
    - executes the tool on the local host backend,
    - streams local command output and write/patch diff in the terminal,
    - resumes the same execution with `command.resume.toolMessages`.
-14. Interactive Ink mode keeps command results and local slash-command views in the history stream while rendering the active turn separately as pending state.
-15. Interactive mode can cancel the current turn with `Ctrl+C` without exiting the whole REPL.
-16. After each turn, it refreshes checkpoint state and persists session metadata locally.
-17. CLI request failures are normalized in the local SDK layer so both Ink and text mode show short diagnostics with target URL and next-step hints for service, auth, assistant-not-found, remote-thread-not-found, URL/protocol, stream, and resume failures.
+14. Interactive Ink mode now renders a stable main layout with:
+   - a transcript history viewport
+   - a bounded current-turn / pending pane
+   - a fixed composer and footer
+   - an inspector panel for `/status`, `/tools`, and `/session`
+15. `interactive.tsx` still owns local UI state:
+   - composer input and input-history browsing
+   - permission prompt display state
+   - active turn cancel handle
+   - inspector panel open/close state
+   - history viewport follow / scroll state
+16. `agent-loop` does not own:
+   - composer text
+   - panel visibility
+   - scroll position
+   - local permission prompt UI transitions
+17. Interactive mode can cancel the current turn with `Ctrl+C` without exiting the whole REPL, while `Esc` stays local to permission denial or panel close.
+18. Text mode and Ink mode still diverge at the CLI boundary:
+   - interactive TTY uses the Ink layout and inspector panels
+   - `-p` and non-TTY keep the existing text renderer and do not depend on Ink panels
+19. After each turn, it refreshes checkpoint state and persists session metadata locally.
+20. CLI request failures are normalized in the local SDK layer so both Ink and text mode show short diagnostics with target URL and next-step hints for service, auth, assistant-not-found, remote-thread-not-found, URL/protocol, stream, and resume failures.
 
 ## Local Backend
 
