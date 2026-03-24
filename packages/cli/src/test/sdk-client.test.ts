@@ -143,7 +143,24 @@ describe("XpertSdkClient local context injection", () => {
         localContext: createLocalContext(),
       }),
     ).rejects.toMatchObject({
-      kind: "not_found",
+      kind: "protocol_error",
+    });
+  });
+
+  it("normalizes assistant lookup failures with assistant-specific wording", async () => {
+    const client = new XpertSdkClient(createConfig());
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ message: "The requested record was not found" }), {
+        status: 404,
+        headers: {
+          "content-type": "application/json",
+        },
+      }),
+    );
+
+    await expect(client.getAssistant("assistant-missing")).rejects.toMatchObject({
+      kind: "assistant_not_found",
+      message: "assistant not found",
     });
   });
 

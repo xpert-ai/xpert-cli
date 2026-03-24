@@ -8,6 +8,7 @@ Local-first terminal coding agent MVP for the `xpert` platform.
 - `xpert -p "..."` single-turn mode
 - `xpert auth status`
 - `xpert doctor`
+- `xpert doctor --json`
 - `xpert resume [sessionId]`
 - Interactive slash commands:
   - `/status`
@@ -24,6 +25,8 @@ Local-first terminal coding agent MVP for the `xpert` platform.
 - `GitStatus`
 - `GitDiff`
 - Local session persistence in `~/.xpert-cli/sessions`
+- Remote fingerprint tracking for `apiUrl`, `organizationId`, and `assistantId`
+- Automatic stale remote state clearing when backend / org / assistant config changes
 - Safe / moderate / dangerous permission checks
 - Local host execution by default, not server-side sandbox execution
 - Duplicate tool-call reuse and repeated-call guard inside one turn
@@ -38,8 +41,18 @@ Local-first terminal coding agent MVP for the `xpert` platform.
 - Request diagnostics for common backend failures:
   - service unreachable / DNS / timeout / connection refused
   - auth failure (`401` / `403`)
+  - assistant not found vs remote thread not found
   - wrong `XPERT_API_URL`, missing route, or protocol mismatch
   - SSE connect failure, mid-run stream interruption, and resume failure
+- Startup preflight for interactive, `-p`, and `resume`:
+  - missing / invalid `XPERT_AGENT_ID`
+  - backend/auth/assistant checks before the first turn
+- Active doctor checks for:
+  - backend reachability
+  - auth validity
+  - assistant existence
+  - organization header acceptance
+  - thread creation
 
 ## Install
 
@@ -130,8 +143,11 @@ Health checks:
 
 ```bash
 node packages/cli/dist/index.js doctor
+node packages/cli/dist/index.js doctor --json
 node packages/cli/dist/index.js auth status
 ```
+
+When a saved local session points at stale remote run state because `XPERT_API_URL`, `XPERT_ORGANIZATION_ID`, or `XPERT_AGENT_ID` changed, the CLI now keeps the local session history but clears the stale remote `threadId`, `runId`, and `checkpointId` before the next turn.
 
 Cancel a stuck turn in interactive mode:
 

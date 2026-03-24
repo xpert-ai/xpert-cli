@@ -2,12 +2,14 @@ export type SdkRequestOperation =
   | "ensureThread"
   | "streamPrompt"
   | "resumeWithToolMessages"
-  | "getCheckpoint";
+  | "getCheckpoint"
+  | "getAssistant";
 
 export type CliRequestFailureKind =
   | "service_unavailable"
   | "auth_failed"
-  | "not_found"
+  | "assistant_not_found"
+  | "remote_thread_not_found"
   | "protocol_error"
   | "stream_connect_failed"
   | "stream_interrupted"
@@ -110,6 +112,7 @@ export function normalizeSdkRequestError(
     operation: input.operation,
     phase: input.phase,
     responseSummary,
+    url,
   });
   const message = buildPrimaryMessage(kind, {
     operation: input.operation,
@@ -163,13 +166,10 @@ function classifyRequestFailure(input: {
   operation: SdkRequestOperation;
   phase?: NormalizeSdkRequestErrorInput["phase"];
   responseSummary?: string;
+  url?: string;
 }): CliRequestFailureKind {
   if (looksLikeInvalidUrl(input.error, input.rawMessage)) {
     return "request_failed";
-  }
-
-  if (looksLikeNotFoundMessage(input.rawMessage)) {
-    return "not_found";
   }
 
   if (looksLikeAuthFailureMessage(input.rawMessage)) {
@@ -180,8 +180,32 @@ function classifyRequestFailure(input: {
     return "auth_failed";
   }
 
-  if (input.statusCode === 404) {
-    return "not_found";
+  if (looksLikeRouteNotFound(input.responseSummary ?? input.rawMessage)) {
+    return "protocol_error";
+  }
+
+  if (
+    looksLikeAssistantNotFound({
+      rawMessage: input.rawMessage,
+      responseSummary: input.responseSummary,
+      statusCode: input.statusCode,
+      operation: input.operation,
+      url: input.url,
+    })
+  ) {
+    return "assistant_not_found";
+  }
+
+  if (
+    looksLikeRemoteThreadNotFound({
+      rawMessage: input.rawMessage,
+      responseSummary: input.responseSummary,
+      statusCode: input.statusCode,
+      operation: input.operation,
+      url: input.url,
+    })
+  ) {
+    return "remote_thread_not_found";
   }
 
   if (input.phase === "stream") {
@@ -229,7 +253,13 @@ function buildPrimaryMessage(
   const forTargetSuffix = input.apiUrl ? ` for ${input.apiUrl}` : "";
   const action = describeOperation(input.operation);
 
-  if (input.preserveMessage && input.rawMessage && !isGenericMessage(input.rawMessage)) {
+  if (
+    input.preserveMessage &&
+    input.rawMessage &&
+    !isGenericMessage(input.rawMessage) &&
+    kind !== "assistant_not_found" &&
+    kind !== "remote_thread_not_found"
+  ) {
     return input.rawMessage;
   }
 
@@ -240,8 +270,10 @@ function buildPrimaryMessage(
         : `cannot reach xpert-pro while trying to ${action}`;
     case "auth_failed":
       return `authentication failed while trying to ${action}${statusSuffix}${forTargetSuffix}`;
-    case "not_found":
-      return `xpert-pro endpoint not found while trying to ${action}${statusSuffix}${targetSuffix}`;
+    case "assistant_not_found":
+      return "assistant not found";
+    case "remote_thread_not_found":
+      return "remote thread not found";
     case "protocol_error":
       return `xpert-pro returned an incompatible response while trying to ${action}${statusSuffix}`;
     case "stream_connect_failed":
@@ -316,10 +348,15 @@ function buildSuggestions(kind: CliRequestFailureKind): string[] {
         "check XPERT_API_KEY and XPERT_AGENT_ID",
         "run xpert auth status",
       ];
-    case "not_found":
+    case "assistant_not_found":
       return [
-        "check XPERT_API_URL points to the xpert-pro /api/ai endpoint",
-        "verify the xpert-pro version matches this CLI protocol",
+        "check XPERT_AGENT_ID",
+        "run xpert doctor",
+      ];
+    case "remote_thread_not_found":
+      return [
+        "retry the turn; the CLI can clear stale remote ids automatically",
+        "run xpert doctor if the remote thread keeps disappearing",
       ];
     case "protocol_error":
       return [
@@ -352,6 +389,7 @@ function buildSuggestions(kind: CliRequestFailureKind): string[] {
 function isRetryable(kind: CliRequestFailureKind): boolean {
   return (
     kind === "service_unavailable" ||
+    kind === "remote_thread_not_found" ||
     kind === "stream_connect_failed" ||
     kind === "stream_interrupted" ||
     kind === "resume_failed"
@@ -368,6 +406,8 @@ function describeOperation(operation: SdkRequestOperation): string {
       return "resume tool results";
     case "getCheckpoint":
       return "load the checkpoint";
+    case "getAssistant":
+      return "load the assistant";
   }
 }
 
@@ -446,17 +486,6 @@ function looksLikeAuthFailureMessage(rawMessage?: string): boolean {
     text.includes("invalid api key") ||
     text.includes("unauthorized") ||
     text.includes("forbidden")
-  );
-}
-
-function looksLikeNotFoundMessage(rawMessage?: string): boolean {
-  const text = rawMessage?.toLowerCase() ?? "";
-  return (
-    text === "not found" ||
-    text.includes("the requested record was not found") ||
-    text.includes("requested record was not found") ||
-    text.includes("record not found") ||
-    text.includes("assistant not found")
   );
 }
 
@@ -601,4 +630,112 @@ function readNumberProperty(value: unknown, key: string): number | undefined {
   }
   const candidate = (value as Record<string, unknown>)[key];
   return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : undefined;
+}
+
+function looksLikeAssistantNotFound(input: {
+  rawMessage?: string;
+  responseSummary?: string;
+  statusCode?: number;
+  operation: SdkRequestOperation;
+  url?: string;
+}): boolean {
+  const text = `${input.responseSummary ?? ""} ${input.rawMessage ?? ""}`.toLowerCase();
+  if (text.includes("assistant not found")) {
+    return true;
+  }
+
+  if (!looksLikeGenericRecordNotFound(text) && input.statusCode !== 404) {
+    return false;
+  }
+
+  return input.operation === "getAssistant" || isAssistantResourceUrl(input.url);
+}
+
+function looksLikeRemoteThreadNotFound(input: {
+  rawMessage?: string;
+  responseSummary?: string;
+  statusCode?: number;
+  operation: SdkRequestOperation;
+  url?: string;
+}): boolean {
+  const text = `${input.responseSummary ?? ""} ${input.rawMessage ?? ""}`.toLowerCase();
+  if (text.includes("assistant not found")) {
+    return false;
+  }
+
+  if (looksLikeExplicitRemoteThreadNotFound(text)) {
+    return input.operation === "getCheckpoint" || isThreadResourceUrl(input.url);
+  }
+
+  if (!looksLikeGenericRecordNotFound(text) && input.statusCode !== 404) {
+    return false;
+  }
+
+  return (
+    input.operation === "getCheckpoint" ||
+    isThreadStateResourceUrl(input.url)
+  );
+}
+
+function looksLikeGenericRecordNotFound(text: string): boolean {
+  return (
+    text.includes("the requested record was not found") ||
+    text.includes("requested record was not found") ||
+    text.includes("record not found") ||
+    text === "not found"
+  );
+}
+
+function looksLikeExplicitRemoteThreadNotFound(text: string): boolean {
+  return (
+    text.includes("thread not found") ||
+    text.includes("remote thread not found")
+  );
+}
+
+function looksLikeRouteNotFound(value?: string): boolean {
+  const text = value?.toLowerCase() ?? "";
+  return (
+    text.includes("cannot get /") ||
+    text.includes("cannot post /") ||
+    text.includes("cannot put /") ||
+    text.includes("cannot patch /") ||
+    text.includes("cannot delete /")
+  );
+}
+
+function isAssistantResourceUrl(url?: string): boolean {
+  if (!url) {
+    return false;
+  }
+
+  try {
+    return /\/assistants\/[^/?#]+(?:$|[?#])/.test(new URL(url).pathname);
+  } catch {
+    return /\/assistants\/[^/?#]+(?:$|[?#])/.test(url);
+  }
+}
+
+function isThreadResourceUrl(url?: string): boolean {
+  if (!url) {
+    return false;
+  }
+
+  try {
+    return /\/threads\/[^/?#]+(?:\/|$)/.test(new URL(url).pathname);
+  } catch {
+    return /\/threads\/[^/?#]+(?:\/|$)/.test(url);
+  }
+}
+
+function isThreadStateResourceUrl(url?: string): boolean {
+  if (!url) {
+    return false;
+  }
+
+  try {
+    return /\/threads\/[^/?#]+\/state(?:\/|$)/.test(new URL(url).pathname);
+  } catch {
+    return /\/threads\/[^/?#]+\/state(?:\/|$)/.test(url);
+  }
 }

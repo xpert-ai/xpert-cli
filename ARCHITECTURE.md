@@ -5,32 +5,35 @@
 1. `xpert-cli` resolves project root from `--cwd`, `git rev-parse --show-toplevel`, or the current shell cwd.
 2. It loads config from env, `~/.xpert-cli/config.json`, and `.xpert-cli.json`.
 3. It opens or creates a local session file in `~/.xpert-cli/sessions/<session-id>.json`.
-4. It picks one of two UI paths:
+4. Before entering interactive, `-p`, or `resume`, it compares a saved remote fingerprint (`apiUrl`, `organizationId`, `assistantId`) against the current config.
+5. If that fingerprint changed, it keeps local transcripts / recent files / approvals but clears stale remote `threadId`, `runId`, and `checkpointId`, then shows a short local warning.
+6. It runs a light preflight before the first turn to catch missing assistant config, missing assistants, auth failures, and obvious backend issues early.
+7. It picks one of two UI paths:
    - interactive TTY: Ink-based minimal TUI
    - `-p` and non-TTY: existing text renderer
-5. It sends the user prompt to `xpert-pro` through `@xpert-ai/xpert-sdk`.
-6. On every new run and every tool-resume call, it rebuilds a short local context snapshot from:
+8. It sends the user prompt to `xpert-pro` through `@xpert-ai/xpert-sdk`.
+9. On every new run and every tool-resume call, it rebuilds a short local context snapshot from:
    - `XPERT.md` / `xpert.md`
    - current `cwd`
    - `projectRoot`
    - `git status --short`
    - recent tool-call summaries
    - recent changed files
-7. It passes local tool schemas and structured local context through `runs.stream(..., { context: ... })`.
-8. It also prepends a hidden local-context envelope to the outbound prompt, and to the first outbound tool message on resume, so the model still sees the context even if arbitrary run `context` fields are not injected into model-visible text upstream.
-9. `agent-loop` emits structured UI events through a UI sink instead of writing directly to stdout.
+10. It passes local tool schemas and structured local context through `runs.stream(..., { context: ... })`.
+11. It also prepends a hidden local-context envelope to the outbound prompt, and to the first outbound tool message on resume, so the model still sees the context even if arbitrary run `context` fields are not injected into model-visible text upstream.
+12. `agent-loop` emits structured UI events through a UI sink instead of writing directly to stdout.
    - `TextUiRenderer` keeps the existing line-oriented output for `-p`, non-TTY, and tests
    - `InkUiSink` maps runtime events into static history plus current pending turn state
-10. When `xpert-pro` interrupts with a client tool call, the CLI:
+13. When `xpert-pro` interrupts with a client tool call, the CLI:
    - checks permissions,
    - deduplicates repeated `callId`s and blocks tight identical-call loops,
    - executes the tool on the local host backend,
    - streams local command output and write/patch diff in the terminal,
    - resumes the same execution with `command.resume.toolMessages`.
-11. Interactive Ink mode keeps command results and local slash-command views in the history stream while rendering the active turn separately as pending state.
-12. Interactive mode can cancel the current turn with `Ctrl+C` without exiting the whole REPL.
-13. After each turn, it refreshes checkpoint state and persists session metadata locally.
-14. CLI request failures are normalized in the local SDK layer so both Ink and text mode show short diagnostics with target URL and next-step hints for service, auth, URL/protocol, stream, and resume failures.
+14. Interactive Ink mode keeps command results and local slash-command views in the history stream while rendering the active turn separately as pending state.
+15. Interactive mode can cancel the current turn with `Ctrl+C` without exiting the whole REPL.
+16. After each turn, it refreshes checkpoint state and persists session metadata locally.
+17. CLI request failures are normalized in the local SDK layer so both Ink and text mode show short diagnostics with target URL and next-step hints for service, auth, assistant-not-found, remote-thread-not-found, URL/protocol, stream, and resume failures.
 
 ## Local Backend
 
@@ -51,9 +54,21 @@ That support is added in the accompanying minimal `xpert-pro` patch in this work
 
 ## Request Failure Diagnostics
 
-- `ensureThread`, `runs/stream`, tool-result resume, and checkpoint fetch failures are normalized inside `xpert-cli`.
-- The CLI distinguishes service unreachable, auth failure, missing route, protocol mismatch, SSE connect failure, mid-run stream interruption, and resume failure.
+- `ensureThread`, assistant lookup, `runs/stream`, tool-result resume, and checkpoint fetch failures are normalized inside `xpert-cli`.
+- The CLI distinguishes service unreachable, auth failure, assistant not found, remote thread not found, missing route / protocol mismatch, SSE connect failure, mid-run stream interruption, and resume failure.
 - User-visible output stays short and actionable, typically including `XPERT_API_URL`, a concise detail line, and hints such as `xpert doctor` or `xpert auth status`.
+
+## Doctor
+
+- `xpert doctor` now performs active checks instead of dumping raw config.
+- The full doctor path verifies:
+  - config presence for `XPERT_API_URL`, `XPERT_API_KEY`, and `XPERT_AGENT_ID`
+  - backend reachability
+  - auth acceptance
+  - assistant existence
+  - organization header acceptance
+  - thread creation
+- `xpert doctor --json` keeps a lightweight machine-readable report.
 
 ## Limits
 

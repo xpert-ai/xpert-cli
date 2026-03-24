@@ -5,6 +5,7 @@ import type { CliSessionState } from "../runtime/session-store.js";
 
 const buildRunLocalContextMock = vi.fn();
 const ensureThreadMock = vi.fn();
+const getAssistantMock = vi.fn();
 const streamPromptMock = vi.fn();
 const resumeWithToolMessagesMock = vi.fn();
 const getCheckpointMock = vi.fn();
@@ -19,6 +20,7 @@ vi.mock("../context/run-context.js", () => ({
 vi.mock("../sdk/client.js", () => ({
   XpertSdkClient: class {
     ensureThread = ensureThreadMock;
+    getAssistant = getAssistantMock;
     streamPrompt = streamPromptMock;
     resumeWithToolMessages = resumeWithToolMessagesMock;
     getCheckpoint = getCheckpointMock;
@@ -69,6 +71,7 @@ describe("agent loop request error handling", () => {
   beforeEach(() => {
     buildRunLocalContextMock.mockReset();
     ensureThreadMock.mockReset();
+    getAssistantMock.mockReset();
     streamPromptMock.mockReset();
     resumeWithToolMessagesMock.mockReset();
     getCheckpointMock.mockReset();
@@ -87,6 +90,9 @@ describe("agent loop request error handling", () => {
     ensureThreadMock.mockImplementation(
       async (existingThreadId?: string) => existingThreadId ?? "thread-1",
     );
+    getAssistantMock.mockResolvedValue({
+      id: "assistant-1",
+    });
     streamPromptMock.mockImplementation(
       async (input: { onRunCreated?: (value: { runId?: string; threadId?: string }) => void }) => {
         input.onRunCreated?.({ runId: "run-1", threadId: "thread-1" });
@@ -239,6 +245,55 @@ describe("agent loop request error handling", () => {
       expect(formatCliError(error)).not.toContain("run stream was interrupted");
       return true;
     });
+  });
+
+  it("does not retry stale-thread recovery when a generic missing-record error is caused by a missing assistant", async () => {
+    const { runAgentTurn } = await import("../agent-loop.js");
+
+    streamPromptMock.mockReset();
+    streamPromptMock.mockImplementationOnce(
+      async (input: { threadId?: string; onRunCreated?: (value: { runId?: string; threadId?: string }) => void }) => {
+        input.onRunCreated?.({ runId: "run-stale", threadId: input.threadId });
+        return {
+          requestUrl: "http://localhost:3000/api/ai/threads/thread-stale/runs/stream",
+          stream: [],
+        };
+      },
+    );
+    getAssistantMock.mockRejectedValueOnce(
+      new XpertCliRequestError({
+        kind: "assistant_not_found",
+        message: "assistant not found",
+        suggestions: ["check XPERT_AGENT_ID", "run xpert doctor"],
+        retryable: false,
+        operation: "getAssistant",
+      }),
+    );
+    streamBatches = [[{ type: "error" as const, message: "The requested record was not found" }]];
+
+    const session = createSession();
+    session.threadId = "thread-stale";
+    session.runId = "run-stale";
+    session.checkpointId = "checkpoint-stale";
+
+    await expect(
+      runAgentTurn({
+        prompt: "hi",
+        config: createConfig(),
+        session,
+        interactive: false,
+      }),
+    ).rejects.toSatisfy((error: unknown) => {
+      expect(error).toBeInstanceOf(XpertCliRequestError);
+      expect((error as XpertCliRequestError).kind).toBe("assistant_not_found");
+      expect(formatCliError(error)).toContain("error: assistant not found");
+      return true;
+    });
+
+    expect(streamPromptMock).toHaveBeenCalledTimes(1);
+    expect(session.threadId).toBe("thread-stale");
+    expect(session.runId).toBe("run-stale");
+    expect(session.checkpointId).toBe("checkpoint-stale");
   });
 
   it("preserves explicit backend stream errors on resume", async () => {

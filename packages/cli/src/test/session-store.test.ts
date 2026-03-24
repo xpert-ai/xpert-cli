@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -73,5 +73,41 @@ describe("SessionStore", () => {
 
     expect(resolved?.sessionId).toBe(projectSession.sessionId);
     expect(resolved?.projectRoot).toBe("/tmp/project-a");
+  });
+
+  it("loads an older session file that does not have a remote fingerprint", async () => {
+    const store = new SessionStore(tempDir);
+    const sessionPath = store.getSessionPath("legacy-session");
+    await store.ensure();
+    await writeFile(
+      sessionPath,
+      `${JSON.stringify({
+        sessionId: "legacy-session",
+        assistantId: "assistant-legacy",
+        threadId: "thread-legacy",
+        runId: "run-legacy",
+        checkpointId: "checkpoint-legacy",
+        cwd: "/tmp/project",
+        projectRoot: "/tmp/project",
+        approvals: [],
+        recentFiles: ["README.md"],
+        recentToolCalls: [],
+        turns: [],
+        createdAt: "2026-03-21T00:00:00.000Z",
+        updatedAt: "2026-03-21T00:00:01.000Z",
+      }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const restored = await store.load("legacy-session");
+
+    expect(restored).toMatchObject({
+      sessionId: "legacy-session",
+      assistantId: "assistant-legacy",
+      threadId: "thread-legacy",
+      runId: "run-legacy",
+      checkpointId: "checkpoint-legacy",
+      remoteFingerprint: undefined,
+    });
   });
 });

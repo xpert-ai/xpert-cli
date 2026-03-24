@@ -31,6 +31,7 @@ import {
   formatCliError,
   isXpertCliRequestError,
   normalizeSdkRequestError,
+  type XpertCliRequestError,
 } from "./sdk/request-errors.js";
 import { createToolRegistry } from "./tools/registry.js";
 import { HostExecutionBackend } from "./tools/backends/host.js";
@@ -509,21 +510,51 @@ export async function runAgentTurn(options: {
             requestOperation === "streamPrompt" &&
             pendingToolMessages == null &&
             options.session.threadId &&
-            !retriedMissingThread &&
-            isMissingRemoteThreadError(normalizedError)
+            !retriedMissingThread
           ) {
-            retriedMissingThread = true;
-            retryWithFreshThread = true;
-            options.session.threadId = undefined;
-            options.session.runId = undefined;
-            options.session.checkpointId = undefined;
-            executionId = undefined;
-            emitTurnEvent({
-              type: "warning",
-              message: "previous remote thread was not found; retrying with a new thread",
-              code: "STALE_THREAD_RETRY",
-            });
-            break;
+            if (isMissingRemoteThreadError(normalizedError)) {
+              retriedMissingThread = true;
+              retryWithFreshThread = true;
+              options.session.threadId = undefined;
+              options.session.runId = undefined;
+              options.session.checkpointId = undefined;
+              executionId = undefined;
+              emitTurnEvent({
+                type: "warning",
+                message: "previous remote thread was not found; retrying with a new thread",
+                code: "STALE_THREAD_RETRY",
+              });
+              break;
+            }
+
+            if (isAmbiguousMissingRecordError(event.message)) {
+              const assistantCheck = await maybeResolveAmbiguousMissingRecord({
+                sdk,
+                config: options.config,
+              });
+
+              if (
+                isXpertCliRequestError(assistantCheck) &&
+                assistantCheck.kind === "assistant_not_found"
+              ) {
+                throw assistantCheck;
+              }
+
+              if (assistantCheck === "assistant_exists") {
+                retriedMissingThread = true;
+                retryWithFreshThread = true;
+                options.session.threadId = undefined;
+                options.session.runId = undefined;
+                options.session.checkpointId = undefined;
+                executionId = undefined;
+                emitTurnEvent({
+                  type: "warning",
+                  message: "previous remote thread was not found; retrying with a new thread",
+                  code: "STALE_THREAD_RETRY",
+                });
+                break;
+              }
+            }
           }
           throw normalizedError;
         }
@@ -634,9 +665,38 @@ function failMissingThreadId(): never {
 function isMissingRemoteThreadError(error: unknown): boolean {
   return (
     isXpertCliRequestError(error) &&
-    error.kind === "not_found" &&
-    error.message.toLowerCase().includes("requested record was not found")
+    error.kind === "remote_thread_not_found"
   );
+}
+
+function isAmbiguousMissingRecordError(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  return (
+    normalized === "the requested record was not found" ||
+    normalized === "requested record was not found" ||
+    normalized === "record not found" ||
+    normalized === "not found"
+  );
+}
+
+async function maybeResolveAmbiguousMissingRecord(input: {
+  sdk: XpertSdkClient;
+  config: { assistantId?: string };
+}): Promise<XpertCliRequestError | "assistant_exists" | null> {
+  if (!input.config.assistantId) {
+    return null;
+  }
+
+  try {
+    await input.sdk.getAssistant(input.config.assistantId);
+    return "assistant_exists";
+  } catch (error) {
+    if (isXpertCliRequestError(error) && error.kind === "assistant_not_found") {
+      return error;
+    }
+
+    return null;
+  }
 }
 
 function createTurnEventExecutionBackend(

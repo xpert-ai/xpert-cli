@@ -195,6 +195,33 @@ export class XpertSdkClient {
     return undefined;
   }
 
+  async getAssistant(assistantId = this.requireAssistantId()): Promise<unknown> {
+    let requestUrl: string | undefined;
+    try {
+      requestUrl = buildApiUrl(this.#config.apiUrl, `assistants/${assistantId}`).toString();
+    } catch (error) {
+      throw normalizeSdkRequestError(error, {
+        operation: "getAssistant",
+        apiUrl: this.#config.apiUrl,
+        method: "GET",
+      });
+    }
+
+    try {
+      return await this.#client.assistants.get(assistantId);
+    } catch (error) {
+      if (isAbortLikeError(error)) {
+        throw error;
+      }
+      throw normalizeSdkRequestError(error, {
+        operation: "getAssistant",
+        apiUrl: this.#config.apiUrl,
+        url: requestUrl,
+        method: "GET",
+      });
+    }
+  }
+
   private requireAssistantId(): string {
     if (!this.#config.assistantId) {
       throw new Error("Missing XPERT_AGENT_ID / assistantId configuration");

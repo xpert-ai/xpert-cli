@@ -7,12 +7,19 @@ import {
   type TurnTranscript,
 } from "./turn-transcript.js";
 
+export interface CliRemoteFingerprint {
+  apiUrl?: string;
+  organizationId?: string;
+  assistantId?: string;
+}
+
 export interface CliSessionState {
   sessionId: string;
   threadId?: string;
   runId?: string;
   checkpointId?: string;
   assistantId?: string;
+  remoteFingerprint?: CliRemoteFingerprint;
   cwd: string;
   projectRoot: string;
   recentFiles: string[];
@@ -124,6 +131,7 @@ function normalizeSessionState(raw: unknown): CliSessionState {
     runId: readString(record.runId),
     checkpointId: readString(record.checkpointId),
     assistantId: readString(record.assistantId),
+    remoteFingerprint: normalizeRemoteFingerprint(record.remoteFingerprint),
     cwd: readString(record.cwd) ?? process.cwd(),
     projectRoot: readString(record.projectRoot) ?? process.cwd(),
     recentFiles: normalizeRecentFiles(record.recentFiles),
@@ -132,6 +140,27 @@ function normalizeSessionState(raw: unknown): CliSessionState {
     turns: sanitizeTurnTranscripts(record.turns),
     createdAt: readString(record.createdAt) ?? now,
     updatedAt: readString(record.updatedAt) ?? now,
+  };
+}
+
+function normalizeRemoteFingerprint(value: unknown): CliRemoteFingerprint | undefined {
+  const record = isRecord(value) ? value : null;
+  if (!record) {
+    return undefined;
+  }
+
+  const apiUrl = readString(record.apiUrl);
+  const organizationId = readString(record.organizationId);
+  const assistantId = readString(record.assistantId);
+
+  if (!apiUrl && !organizationId && !assistantId) {
+    return undefined;
+  }
+
+  return {
+    ...(apiUrl ? { apiUrl } : {}),
+    ...(organizationId ? { organizationId } : {}),
+    ...(assistantId ? { assistantId } : {}),
   };
 }
 
