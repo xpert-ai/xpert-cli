@@ -1,76 +1,82 @@
 import { randomUUID } from "node:crypto";
-import { Box, render, useApp, useInput, useStdout } from "ink";
+import { Box, render, Static, useApp, useInput, useStdout } from "ink";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ResolvedXpertCliConfig } from "@xpert-cli/contracts";
 import { runAgentTurn } from "./agent-loop.js";
-import { buildRunLocalContext } from "./context/run-context.js";
 import { runInterruptibleTurn, TurnCancelledError } from "./runtime/turn-control.js";
 import { formatCliErrorBody } from "./sdk/request-errors.js";
 import {
   getNextTurnLifecycleState,
   type TurnEvent,
+  type TurnEventInput,
   type TurnLifecycleState,
 } from "./runtime/turn-events.js";
 import type { CliSessionState, SessionStore } from "./runtime/session-store.js";
 import { createToolRegistry } from "./tools/registry.js";
-import {
-  buildSessionPanelData,
-  buildStatusPanelData,
-  buildToolsPanelData,
-  runSlashCommand,
-  summarizeGit,
-  type InspectorPanel,
-  type InspectorPanelData,
-} from "./ui/commands.js";
+import { runSlashCommand, type SlashCommandContext } from "./ui/commands.js";
 import {
   createEmptyPendingTurn,
-  materializePendingTurn,
   type PendingTurnState,
   type UiHistoryItem,
   type UiHistoryItemInput,
 } from "./ui/history.js";
-import { resolveEscapeAction, resolveInteractiveSlashCommandEffect } from "./ui/interactive-state.js";
 import { applyTurnEvent } from "./ui/ink-state.js";
+import type { UiEvent } from "./ui/events.js";
 import { InkUiSink } from "./ui/ink-sink.js";
 import { InlinePermissionController } from "./ui/inline-permission.js";
 import { resolveCtrlCAction } from "./ui/ctrl-c.js";
 import { createInputHistoryController } from "./ui/input-history.js";
 import { Composer } from "./ui/ink/composer.js";
-import { Footer } from "./ui/ink/footer.js";
 import { MainContent } from "./ui/ink/main-content.js";
 import { PermissionPrompt } from "./ui/ink/permission-prompt.js";
+import { StatusRow } from "./ui/ink/status-row.js";
 import {
   createInputBufferController,
   parseInputChunk,
 } from "./ui/input-buffer.js";
+import { createTuiRuntime, runWithTuiRuntime } from "./ui/tui-runtime.js";
 import {
-  createViewportState,
-  scrollViewportBy,
-  scrollViewportToEnd,
-  scrollViewportToStart,
-  syncViewport,
-  viewportStatesEqual,
-  type ViewportMetrics,
-} from "./ui/viewport.js";
-import { resolveInkHeights } from "./ui/ink-layout.js";
+  buildPendingRenderBlocks,
+  createCommittedRenderBatch,
+  type CommittedRenderBatch,
+} from "./ui/render-blocks.js";
 
 const DOUBLE_CTRL_C_WINDOW_MS = 1200;
+const MAX_PERMISSION_HEIGHT = 8;
+const STREAM_TEXT_SOFT_LIMIT = 600;
+const STREAM_TEXT_TRAILING_CHARS = 200;
 
 type InteractiveNotice = {
   level: "info" | "warning" | "error";
   message: string;
 };
 
+export interface InteractiveStreamBuffers {
+  assistant: string;
+  reasoning: string;
+}
+
+export interface InteractiveStreamUpdate {
+  items: UiHistoryItemInput[];
+  buffers: InteractiveStreamBuffers;
+}
+
 export async function runInteractiveApp(options: {
   config: ResolvedXpertCliConfig;
   session: CliSessionState;
   sessionStore: SessionStore;
 }): Promise<void> {
-  const instance = render(<InteractiveApp {...options} />, {
-    exitOnCtrlC: false,
+  const runtime = createTuiRuntime({
+    mode: "interactive_ink",
   });
 
-  await instance.waitUntilExit();
+  await runWithTuiRuntime(runtime, async () => {
+    const instance = render(<InteractiveApp {...options} />, {
+      exitOnCtrlC: false,
+    });
+
+    await instance.waitUntilExit();
+  });
 }
 
 function InteractiveApp(props: {
@@ -82,41 +88,46 @@ function InteractiveApp(props: {
   const { stdout } = useStdout();
   const toolRegistry = useMemo(() => createToolRegistry(), []);
   const permissionController = useMemo(() => new InlinePermissionController(), []);
-  const historyIdRef = useRef(0);
+  const historyIdRef = useRef(4);
   const cancelActiveTurnRef = useRef<(() => void) | null>(null);
   const sessionRef = useRef(props.session);
   const lastCtrlCAtRef = useRef<number | null>(null);
   const exitAfterTurnRef = useRef(false);
   const pendingRef = useRef<PendingTurnState>(createEmptyPendingTurn());
+  const streamBuffersRef = useRef(createInteractiveStreamBuffers());
   const [terminalSize, setTerminalSize] = useState(() => getTerminalSize(stdout));
   const [session, setSession] = useState(props.session);
-  const [history, setHistory] = useState<UiHistoryItem[]>(() => [
-    createHistoryItem("history-0", {
-      type: "info",
-      text: `xpert session ${props.session.sessionId}`,
-    }),
-    createHistoryItem("history-1", {
-      type: "info",
-      text: `cwd: ${props.session.cwd}`,
-    }),
-    createHistoryItem("history-2", {
-      type: "info",
-      text: "Commands: /status /tools /session /exit",
-    }),
-  ]);
-  historyIdRef.current = Math.max(historyIdRef.current, history.length);
-
+  const [committedHistory, setCommittedHistory] = useState<CommittedRenderBatch[]>(() => {
+    const initialItems: UiHistoryItem[] = [
+      createHistoryItem("history-0", {
+        type: "info",
+        text: `xpert session ${props.session.sessionId}`,
+      }),
+      createHistoryItem("history-1", {
+        type: "info",
+        text: `cwd: ${props.session.cwd}`,
+      }),
+      createHistoryItem("history-2", {
+        type: "info",
+        text: "Interactive mode is inline. Use your terminal scrollback to review history.",
+      }),
+      createHistoryItem("history-3", {
+        type: "info",
+        text: "Commands: /status /tools /session /exit",
+      }),
+    ];
+    const batch = createCommittedRenderBatch(initialItems);
+    return batch ? [batch] : [];
+  });
   const [pending, setPending] = useState<PendingTurnState>(createEmptyPendingTurn());
-  const [inspector, setInspector] = useState<InspectorPanelData | null>(null);
-  const [historyViewport, setHistoryViewport] = useState(createViewportState());
   const [input, setInput] = useState("");
   const [turnLifecycleState, setTurnLifecycleState] = useState<TurnLifecycleState | "idle">(
     "idle",
   );
+  const [turnStartedAtMs, setTurnStartedAtMs] = useState<number | undefined>(undefined);
   const [permissionState, setPermissionState] = useState(
     permissionController.getState(),
   );
-  const [gitSummary, setGitSummary] = useState("git unknown");
   const [notice, setNotice] = useState<InteractiveNotice>();
   const inputBuffer = useMemo(() => createInputBufferController(setInput), []);
   const inputHistory = useMemo(() => createInputHistoryController(), []);
@@ -136,16 +147,43 @@ function InteractiveApp(props: {
     };
   }, [stdout]);
 
+  useEffect(() => {
+    return permissionController.subscribe((state) => {
+      setPermissionState(state);
+    });
+  }, [permissionController]);
+
   const nextHistoryId = useCallback((): string => {
+    const next = historyIdRef.current;
     historyIdRef.current += 1;
-    return `history-${historyIdRef.current}`;
+    return `history-${next}`;
+  }, []);
+
+  const appendHistoryBatch = useCallback((items: UiHistoryItem[]) => {
+    const batch = createCommittedRenderBatch(items);
+    if (!batch) {
+      return;
+    }
+
+    setCommittedHistory((current) => [...current, batch]);
   }, []);
 
   const addHistoryItem = useCallback(
     (item: UiHistoryItemInput) => {
-      setHistory((current) => [...current, createHistoryItem(nextHistoryId(), item)]);
+      appendHistoryBatch([createHistoryItem(nextHistoryId(), item)]);
     },
-    [nextHistoryId],
+    [appendHistoryBatch, nextHistoryId],
+  );
+
+  const addHistoryItems = useCallback(
+    (items: UiHistoryItemInput[]) => {
+      if (items.length === 0) {
+        return;
+      }
+
+      appendHistoryBatch(items.map((item) => createHistoryItem(nextHistoryId(), item)));
+    },
+    [appendHistoryBatch, nextHistoryId],
   );
 
   const appendTurnEvent = useCallback((event: TurnEvent) => {
@@ -160,95 +198,25 @@ function InteractiveApp(props: {
       }
       return getNextTurnLifecycleState(current, event);
     });
-  }, []);
+
+    const streamUpdate = streamInteractiveTurnEvent(streamBuffersRef.current, event);
+    streamBuffersRef.current = streamUpdate.buffers;
+    addHistoryItems(streamUpdate.items);
+  }, [addHistoryItems]);
 
   const resetPending = useCallback(() => {
     const next = createEmptyPendingTurn();
     pendingRef.current = next;
+    streamBuffersRef.current = createInteractiveStreamBuffers();
     setPending(next);
   }, []);
 
   const commitPending = useCallback(() => {
-    const items = materializePendingTurn(pendingRef.current, nextHistoryId);
-    if (items.length > 0) {
-      setHistory((current) => [...current, ...items]);
-    }
+    const flushed = flushInteractiveStreamBuffers(streamBuffersRef.current);
+    streamBuffersRef.current = flushed.buffers;
+    addHistoryItems(flushed.items);
     resetPending();
-  }, [nextHistoryId, resetPending]);
-
-  const refreshStatus = useCallback(
-    async (sessionState: CliSessionState) => {
-      try {
-        const localContext = await buildRunLocalContext({
-          config: props.config,
-          session: sessionState,
-        });
-        setGitSummary(summarizeGit(localContext.git));
-      } catch (error) {
-        setGitSummary("git error");
-        setNotice({
-          level: "error",
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
-    },
-    [props.config],
-  );
-
-  const refreshInspector = useCallback(
-    async (panel: InspectorPanel, sessionState: CliSessionState) => {
-      try {
-        switch (panel) {
-          case "status":
-            setInspector(
-              await buildStatusPanelData({
-                config: props.config,
-                session: sessionState,
-                toolRegistry,
-                presentation: "ink",
-              }),
-            );
-            return;
-          case "tools":
-            setInspector(
-              buildToolsPanelData({
-                config: props.config,
-                session: sessionState,
-                toolRegistry,
-                presentation: "ink",
-              }),
-            );
-            return;
-          case "session":
-            setInspector(buildSessionPanelData(sessionState));
-        }
-      } catch (error) {
-        setNotice({
-          level: "error",
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
-    },
-    [props.config, toolRegistry],
-  );
-
-  useEffect(() => {
-    void refreshStatus(session);
-  }, [refreshStatus, session]);
-
-  useEffect(() => {
-    if (!inspector?.panel) {
-      return;
-    }
-
-    void refreshInspector(inspector.panel, session);
-  }, [inspector?.panel, refreshInspector, session]);
-
-  useEffect(() => {
-    return permissionController.subscribe((state) => {
-      setPermissionState(state);
-    });
-  }, [permissionController]);
+  }, [addHistoryItems, resetPending]);
 
   const uiSink = useMemo(
     () =>
@@ -260,33 +228,6 @@ function InteractiveApp(props: {
       }),
     [appendTurnEvent],
   );
-
-  const handleHistoryViewportMetrics = useCallback((metrics: ViewportMetrics) => {
-    setHistoryViewport((current) => {
-      const reason =
-        current.wrapWidth !== metrics.wrapWidth ||
-        current.viewportHeight !== metrics.viewportHeight
-          ? "resize"
-          : "content";
-      const next = syncViewport(current, metrics, reason);
-      return viewportStatesEqual(current, next) ? current : next;
-    });
-  }, []);
-
-  const scrollHistory = useCallback((action: "page_up" | "page_down" | "home" | "end") => {
-    setHistoryViewport((current) => {
-      switch (action) {
-        case "home":
-          return scrollViewportToStart(current);
-        case "end":
-          return scrollViewportToEnd(current);
-        case "page_up":
-          return scrollViewportBy(current, -Math.max(1, current.viewportHeight - 1));
-        case "page_down":
-          return scrollViewportBy(current, Math.max(1, current.viewportHeight - 1));
-      }
-    });
-  }, []);
 
   const exitInteractive = useCallback(async () => {
     await props.sessionStore.save(sessionRef.current);
@@ -311,29 +252,18 @@ function InteractiveApp(props: {
     inputHistory.push(prompt);
 
     if (prompt.startsWith("/")) {
-      const result = await runSlashCommand(prompt, {
+      const slashEffect = await runInteractiveSlashCommand(prompt, {
         config: props.config,
         session,
         toolRegistry,
-        presentation: "ink",
       });
-      const effect = resolveInteractiveSlashCommandEffect(result);
 
-      if (effect.shouldExit) {
+      if (slashEffect.shouldExit) {
         await exitInteractive();
         return;
       }
 
-      if (effect.panel) {
-        setInspector(effect.panel);
-        await refreshStatus(session);
-        return;
-      }
-
-      if (effect.historyItem) {
-        addHistoryItem(effect.historyItem);
-      }
-      await refreshStatus(session);
+      addHistoryItems(slashEffect.historyItems);
       return;
     }
 
@@ -343,6 +273,7 @@ function InteractiveApp(props: {
     });
     resetPending();
     setTurnLifecycleState("running");
+    setTurnStartedAtMs(Date.now());
 
     try {
       const nextSession = await runInterruptibleTurn(
@@ -391,7 +322,7 @@ function InteractiveApp(props: {
       cancelActiveTurnRef.current = null;
       commitPending();
       setTurnLifecycleState("idle");
-      await refreshStatus(sessionRef.current);
+      setTurnStartedAtMs(undefined);
       if (exitAfterTurnRef.current) {
         exitAfterTurnRef.current = false;
         await exitInteractive();
@@ -399,6 +330,7 @@ function InteractiveApp(props: {
     }
   }, [
     addHistoryItem,
+    addHistoryItems,
     commitPending,
     exitInteractive,
     inputBuffer,
@@ -407,7 +339,6 @@ function InteractiveApp(props: {
     permissionState,
     props.config,
     props.sessionStore,
-    refreshStatus,
     resetPending,
     session,
     toolRegistry,
@@ -419,14 +350,7 @@ function InteractiveApp(props: {
     lifecycleState: turnLifecycleState,
     permissionActive: Boolean(permissionState),
   });
-  const permissionLayout = resolveInkHeights({
-    terminalHeight: terminalSize.height,
-    permissionVisible: Boolean(permissionState),
-    permissionChoiceCount: permissionState?.choices.length ?? 0,
-    inspectorMode: "hidden",
-    inspectorLineCount: 0,
-    pendingLineCount: 0,
-  });
+  const pendingBlocks = useMemo(() => buildPendingRenderBlocks(pending), [pending]);
 
   useInput((value, key) => {
     if (key.ctrl && (value === "c" || value === "C" || value === "\u0003")) {
@@ -470,37 +394,6 @@ function InteractiveApp(props: {
       if (key.escape) {
         permissionController.denySelection();
       }
-      return;
-    }
-
-    if (key.escape) {
-      const action = resolveEscapeAction({
-        permissionActive: false,
-        panelOpen: Boolean(inspector),
-      });
-      if (action === "close_panel") {
-        setInspector(null);
-        return;
-      }
-    }
-
-    if (key.pageUp) {
-      scrollHistory("page_up");
-      return;
-    }
-
-    if (key.pageDown) {
-      scrollHistory("page_down");
-      return;
-    }
-
-    if (key.home) {
-      scrollHistory("home");
-      return;
-    }
-
-    if (key.end) {
-      scrollHistory("end");
       return;
     }
 
@@ -550,43 +443,26 @@ function InteractiveApp(props: {
   });
 
   return (
-    <Box
-      flexDirection="column"
-      width={terminalSize.width}
-      height={terminalSize.height}
-      overflow="hidden"
-    >
-      <MainContent
-        terminalWidth={terminalSize.width}
-        terminalHeight={terminalSize.height}
-        permissionVisible={Boolean(permissionState)}
-        permissionChoiceCount={permissionState?.choices.length ?? 0}
-        history={history}
-        pending={pending}
-        inspector={inspector}
-        historyViewport={historyViewport}
-        onHistoryViewportMetrics={handleHistoryViewportMetrics}
-      />
+    <Box flexDirection="column" width={terminalSize.width}>
+      <Static items={committedHistory}>
+        {(batch) => <MainContent key={batch.id} width={terminalSize.width} blocks={batch.blocks} />}
+      </Static>
+      <MainContent width={terminalSize.width} blocks={pendingBlocks} />
       {permissionState ? (
         <PermissionPrompt
           width={terminalSize.width}
-          height={permissionLayout.permissionHeight}
+          height={resolvePermissionHeight(permissionState)}
           state={permissionState}
         />
       ) : null}
-      <Composer width={terminalSize.width} value={input} turnState={turnState} />
-      <Footer
+      <StatusRow
         width={terminalSize.width}
-        cwd={session.cwd}
-        git={gitSummary}
-        sessionId={session.sessionId}
-        assistantId={session.assistantId ?? props.config.assistantId}
-        approvalMode={props.config.approvalMode}
         turnState={turnState}
-        followLatest={historyViewport.follow}
-        inspectorPanel={inspector?.panel ?? null}
+        pendingBlocks={pendingBlocks}
+        startedAtMs={turnStartedAtMs}
         notice={notice}
       />
+      <Composer width={terminalSize.width} value={input} turnState={turnState} />
     </Box>
   );
 }
@@ -598,12 +474,10 @@ function createHistoryItem(id: string, item: UiHistoryItemInput): UiHistoryItem 
   };
 }
 
-function toInteractiveTurnState(
-  input: {
-    lifecycleState: TurnLifecycleState | "idle";
-    permissionActive: boolean;
-  },
-): "idle" | "running" | "waiting_permission" {
+function toInteractiveTurnState(input: {
+  lifecycleState: TurnLifecycleState | "idle";
+  permissionActive: boolean;
+}): "idle" | "running" | "waiting_permission" {
   if (input.permissionActive) {
     return "waiting_permission";
   }
@@ -620,7 +494,267 @@ function getTerminalSize(stdout: NodeJS.WriteStream): {
   height: number;
 } {
   return {
-    width: Math.max(40, stdout.columns ?? process.stdout.columns ?? 80),
-    height: Math.max(8, stdout.rows ?? process.stdout.rows ?? 24),
+    width: Math.max(1, stdout.columns ?? process.stdout.columns ?? 80),
+    height: Math.max(1, stdout.rows ?? process.stdout.rows ?? 24),
+  };
+}
+
+function resolvePermissionHeight(input: {
+  choices: Array<unknown>;
+}): number {
+  return Math.min(MAX_PERMISSION_HEIGHT, Math.max(2, input.choices.length + 2));
+}
+
+export async function runInteractiveSlashCommand(
+  input: string,
+  context: Omit<SlashCommandContext, "presentation">,
+): Promise<{
+  shouldExit: boolean;
+  historyItems: UiHistoryItemInput[];
+}> {
+  const result = await runSlashCommand(input, {
+    ...context,
+    presentation: "text",
+  });
+
+  if (result.type === "exit") {
+    return {
+      shouldExit: true,
+      historyItems: [],
+    };
+  }
+
+  if (result.type === "history") {
+    return {
+      shouldExit: false,
+      historyItems: [result.item],
+    };
+  }
+
+  return {
+    shouldExit: false,
+    historyItems: [
+      {
+        type: "warning",
+        text: `Interactive mode expected inline output for /${result.panel}.`,
+      },
+    ],
+  };
+}
+
+export function createInteractiveStreamBuffers(): InteractiveStreamBuffers {
+  return {
+    assistant: "",
+    reasoning: "",
+  };
+}
+
+export function streamInteractiveTurnEvent(
+  current: InteractiveStreamBuffers,
+  event: UiEvent | TurnEventInput,
+): InteractiveStreamUpdate {
+  switch (event.type) {
+    case "assistant_text":
+    case "assistant_text_delta":
+      return appendStreamText(current, "assistant", event.text);
+    case "reasoning":
+      return appendStreamText(current, "reasoning", event.text);
+    case "tool_requested":
+    case "tool_call": {
+      const flushed = flushInteractiveStreamBuffers(current);
+      return {
+        buffers: flushed.buffers,
+        items: [
+          ...flushed.items,
+          {
+            type: "tool_call",
+            callId: "callId" in event ? event.callId : undefined,
+            toolName: event.toolName,
+            target: event.target,
+            argsSummary: "argsSummary" in event ? event.argsSummary : undefined,
+          },
+        ],
+      };
+    }
+    case "tool_output_line":
+    case "bash_line": {
+      const flushed = flushInteractiveStreamBuffers(current);
+      return {
+        buffers: flushed.buffers,
+        items: [
+          ...flushed.items,
+          {
+            type: "bash_line",
+            callId: "callId" in event ? event.callId : undefined,
+            toolName: "toolName" in event ? event.toolName : undefined,
+            text: event.line,
+          },
+        ],
+      };
+    }
+    case "tool_diff":
+    case "diff": {
+      const flushed = flushInteractiveStreamBuffers(current);
+      return {
+        buffers: flushed.buffers,
+        items: [
+          ...flushed.items,
+          {
+            type: "diff",
+            callId: "callId" in event ? event.callId : undefined,
+            toolName: "toolName" in event ? event.toolName : undefined,
+            path: "path" in event ? event.path : undefined,
+            text: event.diffText,
+          },
+        ],
+      };
+    }
+    case "tool_completed":
+    case "tool_ack": {
+      const flushed = flushInteractiveStreamBuffers(current);
+      return {
+        buffers: flushed.buffers,
+        items: [
+          ...flushed.items,
+          {
+            type: "tool_result",
+            callId: "callId" in event ? event.callId : undefined,
+            toolName: event.toolName,
+            summary: event.summary,
+            status: "status" in event ? event.status : "success",
+          },
+        ],
+      };
+    }
+    case "warning": {
+      if ("code" in event && event.code === "STALE_THREAD_RETRY") {
+        return {
+          items: [],
+          buffers: current,
+        };
+      }
+      const flushed = flushInteractiveStreamBuffers(current);
+      return {
+        buffers: flushed.buffers,
+        items: [
+          ...flushed.items,
+          {
+            type: "warning",
+            callId: "callId" in event ? event.callId : undefined,
+            toolName: "toolName" in event ? event.toolName : undefined,
+            code: "code" in event ? event.code : undefined,
+            text: event.message,
+          },
+        ],
+      };
+    }
+    case "error": {
+      const flushed = flushInteractiveStreamBuffers(current);
+      return {
+        buffers: flushed.buffers,
+        items: [
+          ...flushed.items,
+          {
+            type: "error",
+            callId: "callId" in event ? event.callId : undefined,
+            toolName: "toolName" in event ? event.toolName : undefined,
+            code: "code" in event ? event.code : undefined,
+            text: event.message,
+          },
+        ],
+      };
+    }
+    default:
+      return {
+        items: [],
+        buffers: current,
+      };
+  }
+}
+
+export function flushInteractiveStreamBuffers(
+  current: InteractiveStreamBuffers,
+): InteractiveStreamUpdate {
+  const items: UiHistoryItemInput[] = [];
+
+  if (current.assistant.length > 0) {
+    items.push({
+      type: "assistant_text",
+      text: current.assistant,
+    });
+  }
+  if (current.reasoning.length > 0) {
+    items.push({
+      type: "reasoning",
+      text: current.reasoning,
+    });
+  }
+
+  return {
+    items,
+    buffers: createInteractiveStreamBuffers(),
+  };
+}
+
+function appendStreamText(
+  current: InteractiveStreamBuffers,
+  key: "assistant" | "reasoning",
+  text: string,
+): InteractiveStreamUpdate {
+  const otherKey = key === "assistant" ? "reasoning" : "assistant";
+  const flushedOther =
+    current[otherKey].length > 0
+      ? flushInteractiveStreamBuffers(current)
+      : {
+          items: [],
+          buffers: current,
+        };
+  const nextBuffers: InteractiveStreamBuffers = {
+    ...flushedOther.buffers,
+    [key]: flushedOther.buffers[key] + text,
+  };
+  const split = splitFlushableStreamText(nextBuffers[key]);
+
+  if (!split.flushText) {
+    return {
+      items: flushedOther.items,
+      buffers: nextBuffers,
+    };
+  }
+
+  return {
+    items: [
+      ...flushedOther.items,
+      {
+        type: key === "assistant" ? "assistant_text" : "reasoning",
+        text: split.flushText,
+      },
+    ],
+    buffers: {
+      ...nextBuffers,
+      [key]: split.remainder,
+    },
+  };
+}
+
+export function splitFlushableStreamText(input: string): {
+  flushText: string;
+  remainder: string;
+} {
+  if (input.length <= STREAM_TEXT_SOFT_LIMIT) {
+    return {
+      flushText: "",
+      remainder: input,
+    };
+  }
+
+  const splitAt = Math.max(
+    STREAM_TEXT_SOFT_LIMIT - STREAM_TEXT_TRAILING_CHARS,
+    input.length - STREAM_TEXT_TRAILING_CHARS,
+  );
+
+  return {
+    flushText: input.slice(0, splitAt),
+    remainder: input.slice(splitAt),
   };
 }

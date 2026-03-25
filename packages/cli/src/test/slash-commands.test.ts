@@ -173,6 +173,38 @@ describe("slash commands", () => {
     expect(result.item.lines).toContain("  files: packages/cli/src/cli.ts");
   });
 
+  it("keeps interactive slash commands inline when the Ink app runs in no-alt-screen mode", async () => {
+    const result = await runSlashCommand("/status", {
+      config: createConfig(),
+      session: createSession(),
+      presentation: "text",
+      deps: {
+        buildRunLocalContext: vi.fn().mockResolvedValue({
+          cwd: "/tmp/project/packages/cli",
+          projectRoot: "/tmp/project",
+          xpertMd: { available: false, truncated: false },
+          git: {
+            available: true,
+            isRepo: true,
+            statusShort: "",
+            truncated: false,
+          },
+          workingSet: {
+            recentFiles: [],
+            recentToolCalls: [],
+          },
+        }),
+      },
+    });
+
+    expect(result.type).toBe("history");
+    if (result.type !== "history") {
+      throw new Error("Expected /status to stay inline");
+    }
+
+    expect(result.item.type).toBe("status_view");
+  });
+
   it("returns an exit action for /exit", async () => {
     await expect(
       runSlashCommand("/exit", {

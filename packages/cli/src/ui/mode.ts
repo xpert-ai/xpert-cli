@@ -16,3 +16,7 @@ export function resolveCliExecutionMode(input: {
     ? "interactive_ink"
     : "interactive_text";
 }
+
+export function shouldUseAlternateBuffer(mode: CliExecutionMode): boolean {
+  return false;
+}

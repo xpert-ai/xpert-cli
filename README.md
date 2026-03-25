@@ -4,11 +4,12 @@ Local-first terminal coding agent MVP for the `xpert` platform.
 
 ## What Works
 
-- `xpert` interactive TTY mode with a stable Ink TUI:
-  - transcript viewport with follow/scroll
-  - bounded current-turn / pending pane
-  - fixed composer and footer
-  - local inspector panel for `/status`, `/tools`, and `/session`
+- `xpert` interactive TTY mode with an inline Ink UI:
+  - inline Ink layout without entering the terminal alternate buffer
+  - committed history appended into normal terminal scrollback
+  - block/message rendering for user, assistant, tool, bash, diff, and notices
+  - `/status`, `/tools`, and `/session` rendered inline from local state
+  - busy status row, inline permission prompt, and fixed composer
 - `xpert -p "..."` single-turn mode
 - `xpert auth status`
 - `xpert doctor`
@@ -115,14 +116,15 @@ Interactive:
 pnpm --dir xpert-cli --filter @xpert-ai/xpert-cli dev
 ```
 
-When both `stdin` and `stdout` are real TTYs, interactive mode now starts an Ink-based TUI with:
+When both `stdin` and `stdout` are real TTYs, interactive mode now starts an inline Ink app without entering the terminal alternate buffer:
 
-- transcript history viewport
-- bounded current-turn / pending pane
-- fixed composer input
-- fixed footer status
-- local inspector panel for `/status`, `/tools`, and `/session`
-- `PageUp` / `PageDown` / `Home` / `End` history scrolling
+- committed history is appended above the live footer and remains in normal terminal scrollback
+- the current pending turn stays live near the bottom while streamed assistant/tool output is also appended into terminal scrollback during the turn
+- `/status`, `/tools`, and `/session` render as inline local history blocks
+- the permission prompt stays inline
+- the composer remains at the bottom of the live footer
+
+The main history surface is now the host terminal scrollback, so terminal mouse-wheel scrolling and the terminal scrollbar work naturally again.
 
 Or after build:
 
@@ -166,9 +168,9 @@ This cancels the current run or local tool execution and drops back to `xpert>`.
 
 Inside the Ink interactive TTY UI:
 
-- `/status` opens or refreshes the status inspector panel using local runtime state
-- `/tools` opens or refreshes the tools inspector panel using the local registry and session data
-- `/session` opens or refreshes the session inspector panel using local turn transcripts
+- `/status` prints inline status output from local runtime state
+- `/tools` prints inline tool output from the local registry and session data
+- `/session` prints inline session output from local turn transcripts
 - `/exit` closes the interactive session
 
 These commands are resolved locally from runtime state and do not call the model. In `-p` and non-TTY flows, the existing text renderer remains unchanged.
@@ -176,10 +178,9 @@ These commands are resolved locally from runtime state and do not call the model
 ## Interactive Keys
 
 - `Ctrl+C`: cancel the current turn; press again to exit
-- `Esc`: deny the active permission prompt, or close the open inspector panel
-- `PageUp` / `PageDown`: scroll transcript history
-- `Home` / `End`: jump to the start or return to live follow mode
+- `Esc`: deny the active permission prompt
 - `Up` / `Down`: browse input history in the composer
+- terminal scrollback / mouse wheel / terminal scrollbar: review interactive history
 
 ## Demo Flow
 
@@ -268,7 +269,8 @@ npm install --prefix "$TMP_DIR" -g ./xpert-ai-xpert-cli-$(node -p "require('./pa
   - `git status --short` is line-limited
   - recent files and tool-call summaries are count-limited
 - The Ink UI is intentionally minimal:
-  - no alternate buffer mode
+  - interactive Ink now runs inline without entering the terminal alternate buffer
+  - history review is delegated to host terminal scrollback, not a complex in-app viewport
   - no mouse support
   - no vim mode
   - no theme system

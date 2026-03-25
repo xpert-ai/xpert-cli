@@ -9,7 +9,7 @@
 5. If that fingerprint changed, it keeps local transcripts / recent files / approvals but clears stale remote `threadId`, `runId`, and `checkpointId`, then shows a short local warning.
 6. It runs a light preflight before the first turn to catch missing assistant config, missing assistants, auth failures, and obvious backend issues early.
 7. It picks one of two UI paths:
-   - interactive TTY: Ink-based minimal TUI
+   - interactive TTY: inline Ink app without entering the terminal alternate buffer
    - `-p` and non-TTY: existing text renderer
 8. It sends the user prompt to `xpert-pro` through `@xpert-ai/xpert-sdk`.
 9. On every new run and every tool-resume call, it rebuilds a short local context snapshot from:
@@ -30,25 +30,29 @@
    - executes the tool on the local host backend,
    - streams local command output and write/patch diff in the terminal,
    - resumes the same execution with `command.resume.toolMessages`.
-14. Interactive Ink mode now renders a stable main layout with:
-   - a transcript history viewport
-   - a bounded current-turn / pending pane
-   - a fixed composer and footer
-   - an inspector panel for `/status`, `/tools`, and `/session`
+14. Interactive Ink mode now renders an inline layout with:
+   - append-only committed history rendered through Ink `Static`
+   - a live pending-turn tail rendered below committed history while streamed assistant/tool output is appended into host scrollback during the turn
+   - inline local slash-command output for `/status`, `/tools`, and `/session`
+   - an inline busy status row, permission prompt, and composer
+14.1. Because interactive TTY no longer enters the terminal alternate buffer:
+   - committed history lands in normal host terminal scrollback
+   - terminal mouse-wheel scrolling and the terminal scrollbar become the main history navigation surface again
 15. `interactive.tsx` still owns local UI state:
    - composer input and input-history browsing
    - permission prompt display state
    - active turn cancel handle
-   - inspector panel open/close state
-   - history viewport follow / scroll state
+   - append-only committed history batches plus live pending-turn state
+15.1. The interactive UI runtime is split into small local helpers:
+   - `ui/tui-runtime.ts`: alternate buffer enter / restore
+   - `ui/history.ts`: pending-turn materialization into committed history items
+   - `ui/render-blocks.ts`: committed history and pending state -> render blocks
 16. `agent-loop` does not own:
    - composer text
-   - panel visibility
-   - scroll position
    - local permission prompt UI transitions
-17. Interactive mode can cancel the current turn with `Ctrl+C` without exiting the whole REPL, while `Esc` stays local to permission denial or panel close.
+17. Interactive mode can cancel the current turn with `Ctrl+C` without exiting the whole REPL, while `Esc` stays local to permission denial.
 18. Text mode and Ink mode still diverge at the CLI boundary:
-   - interactive TTY uses the Ink layout and inspector panels
+   - interactive TTY uses the inline Ink layout and host terminal scrollback
    - `-p` and non-TTY keep the existing text renderer and do not depend on Ink panels
 19. After each turn, it refreshes checkpoint state and persists session metadata locally.
 20. CLI request failures are normalized in the local SDK layer so both Ink and text mode show short diagnostics with target URL and next-step hints for service, auth, assistant-not-found, remote-thread-not-found, URL/protocol, stream, and resume failures.
@@ -97,7 +101,7 @@ That support is added in the accompanying minimal `xpert-pro` patch in this work
 - Session resume restores thread/session context, but not an already-open SSE connection.
 - Repeated tool-call protection is scoped to the active turn only.
 - The Ink UI is intentionally minimal:
-  - no alternate buffer mode
+  - interactive mode is inline and relies on host terminal scrollback instead of a complex in-app viewport
   - no mouse support
   - no vim mode
   - no theme system
