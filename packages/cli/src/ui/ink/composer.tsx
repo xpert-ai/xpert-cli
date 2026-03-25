@@ -1,4 +1,8 @@
 import { Box, Text } from "ink";
+import {
+  stringDisplayWidth,
+  truncateDisplayWidth,
+} from "../display-width.js";
 
 export function Composer(props: {
   width: number;
@@ -8,22 +12,25 @@ export function Composer(props: {
   contextHint?: string;
 }) {
   if (props.turnState === "running") {
+    const line = buildComposerStatusLine(
+      props.width,
+      "[RUNNING] Turn active · Ctrl+C aborts",
+    );
     return (
       <Box width={props.width} overflow="hidden">
-        <Text dimColor>{buildComposerStatusLine(props.width, "running... Ctrl+C cancels the turn.")}</Text>
+        <Text color="yellow">{line}</Text>
       </Box>
     );
   }
 
   if (props.turnState === "waiting_permission") {
+    const line = buildComposerStatusLine(
+      props.width,
+      "[PERMISSION] Choose below · Esc denies · Ctrl+C aborts",
+    );
     return (
       <Box width={props.width} overflow="hidden">
-        <Text dimColor>
-          {buildComposerStatusLine(
-            props.width,
-            "waiting for permission... Esc denies, Ctrl+C aborts the turn.",
-          )}
-        </Text>
+        <Text color="yellow">{line}</Text>
       </Box>
     );
   }
@@ -37,6 +44,9 @@ export function Composer(props: {
 
   return (
     <Box width={props.width} overflow="hidden">
+      <Text color={props.focused === false ? undefined : "green"} dimColor={props.focused === false}>
+        {line.badge}
+      </Text>
       <Text color={props.focused === false ? undefined : "cyan"} dimColor={props.focused === false}>
         {line.prompt}
       </Text>
@@ -46,10 +56,11 @@ export function Composer(props: {
   );
 }
 
+const READY_BADGE = "[READY] ";
 const PROMPT = "xpert> ";
 const CURSOR = "█";
 const COMPOSER_PLACEHOLDER =
-  "/status /tools /session /exit | Up/Down history | terminal scrollback";
+  "Ask for a change or run /status /tools /session";
 
 export function buildComposerInputLine(input: {
   width: number;
@@ -57,46 +68,39 @@ export function buildComposerInputLine(input: {
   focused?: boolean;
   contextHint?: string;
 }): {
+  badge: string;
   prompt: string;
   body: string;
   cursor: string;
 } {
   const width = Math.max(1, input.width);
-  const availableBodyWidth = Math.max(0, width - stringWidth(PROMPT) - stringWidth(CURSOR));
   const source =
     input.value ||
     (input.focused === false
       ? input.contextHint ?? "Composer idle"
       : COMPOSER_PLACEHOLDER);
+  const cursor = input.focused === false || width <= stringDisplayWidth(READY_BADGE) + stringDisplayWidth(PROMPT)
+    ? ""
+    : CURSOR;
+  const availableBodyWidth = Math.max(
+    0,
+    width -
+      stringDisplayWidth(READY_BADGE) -
+      stringDisplayWidth(PROMPT) -
+      stringDisplayWidth(cursor),
+  );
 
   return {
-    prompt: clipToWidth(PROMPT, Math.max(0, width - stringWidth(CURSOR))),
-    body: clipToWidth(source, availableBodyWidth),
-    cursor: input.focused === false || width <= stringWidth(PROMPT) ? "" : CURSOR,
+    badge: truncateDisplayWidth(READY_BADGE, Math.max(0, width - stringDisplayWidth(cursor))),
+    prompt: truncateDisplayWidth(
+      PROMPT,
+      Math.max(0, width - stringDisplayWidth(READY_BADGE) - stringDisplayWidth(cursor)),
+    ),
+    body: truncateDisplayWidth(source, availableBodyWidth),
+    cursor,
   };
 }
 
 export function buildComposerStatusLine(width: number, message: string): string {
-  return clipToWidth(message, Math.max(1, width));
-}
-
-function clipToWidth(value: string, width: number): string {
-  if (width <= 0) {
-    return "";
-  }
-
-  const chars = Array.from(value);
-  if (chars.length <= width) {
-    return value;
-  }
-
-  if (width === 1) {
-    return chars[0] ?? "";
-  }
-
-  return `${chars.slice(0, width - 1).join("")}…`;
-}
-
-function stringWidth(value: string): number {
-  return Array.from(value).length;
+  return truncateDisplayWidth(message, Math.max(1, width));
 }

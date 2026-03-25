@@ -1,6 +1,7 @@
 import { Box, Text } from "ink";
 import { useEffect, useState } from "react";
 import type { UiRenderBlock } from "../render-blocks.js";
+import { stringDisplayWidth, truncateDisplayWidth } from "../display-width.js";
 
 const SPINNER_FRAMES = ["◐", "◓", "◑", "◒"] as const;
 
@@ -51,11 +52,12 @@ export function StatusRow(props: {
 }
 
 export interface StatusRowModel {
-  indicator: string;
+  badge: string;
   action: string;
   elapsed?: string;
   hint: string;
   notice?: string;
+  noticeLabel?: string;
   level: "info" | "warning" | "error";
 }
 
@@ -70,32 +72,41 @@ export function deriveStatusRowModel(input: {
   spinnerFrame: string;
 }): StatusRowModel {
   if (input.turnState === "waiting_permission") {
+    const waitingTool = input.pendingBlocks.find(
+      (block) => block.kind === "tool_group" && block.status === "waiting_permission",
+    );
     return {
-      indicator: "!",
-      action: "Waiting for permission",
+      badge: "[WAIT]",
+      action:
+        waitingTool?.kind === "tool_group"
+          ? `${waitingTool.toolName}${waitingTool.target ? ` · ${waitingTool.target}` : ""}`
+          : "Waiting for permission",
       elapsed: formatElapsed(input.elapsedMs),
       hint: "Esc denies · Ctrl+C aborts",
-      notice: input.notice ? clipInline(input.notice.message, 48) : undefined,
+      notice: input.notice ? truncateDisplayWidth(input.notice.message, 40) : undefined,
+      noticeLabel: input.notice ? formatNoticeLabel(input.notice.level) : undefined,
       level: input.notice?.level === "error" ? "error" : "warning",
     };
   }
 
   if (input.turnState === "running") {
     return {
-      indicator: input.spinnerFrame,
+      badge: `[${input.spinnerFrame}]`,
       action: deriveRunningAction(input.pendingBlocks),
       elapsed: formatElapsed(input.elapsedMs),
       hint: "Ctrl+C aborts",
-      notice: input.notice ? clipInline(input.notice.message, 48) : undefined,
+      notice: input.notice ? truncateDisplayWidth(input.notice.message, 40) : undefined,
+      noticeLabel: input.notice ? formatNoticeLabel(input.notice.level) : undefined,
       level: input.notice?.level ?? "info",
     };
   }
 
   return {
-    indicator: "○",
+    badge: "[IDLE]",
     action: "Ready",
-    hint: "Terminal scrollback keeps history · /status /tools /session",
-    notice: input.notice ? clipInline(input.notice.message, 48) : undefined,
+    hint: "Scrollback keeps history · /status /tools /session",
+    notice: input.notice ? truncateDisplayWidth(input.notice.message, 40) : undefined,
+    noticeLabel: input.notice ? formatNoticeLabel(input.notice.level) : undefined,
     level: input.notice?.level ?? "info",
   };
 }
@@ -104,16 +115,30 @@ export function buildStatusRowText(input: {
   width: number;
   model: StatusRowModel;
 }): string {
-  const parts = [`${input.model.indicator} ${input.model.action}`];
-  if (input.model.elapsed) {
-    parts.push(input.model.elapsed);
-  }
-  parts.push(input.model.hint);
-  if (input.model.notice) {
-    parts.push(input.model.notice);
+  const segments = [
+    input.model.elapsed,
+    input.model.notice && input.model.noticeLabel
+      ? `${input.model.noticeLabel}: ${input.model.notice}`
+      : undefined,
+    input.model.hint,
+  ].filter((segment): segment is string => Boolean(segment));
+
+  let line = `${input.model.badge} ${input.model.action}`;
+  for (const segment of segments) {
+    const next = `${line} │ ${segment}`;
+    if (stringDisplayWidth(next) <= input.width) {
+      line = next;
+      continue;
+    }
+
+    const remainingWidth = Math.max(0, input.width - stringDisplayWidth(`${line} │ `));
+    if (remainingWidth > 0) {
+      line = `${line} │ ${truncateDisplayWidth(segment, remainingWidth)}`;
+    }
+    break;
   }
 
-  return clipInline(parts.join(" · "), input.width);
+  return truncateDisplayWidth(line, Math.max(1, input.width));
 }
 
 export function formatElapsed(elapsedMs: number): string {
@@ -141,12 +166,12 @@ function deriveRunningAction(blocks: UiRenderBlock[]): string {
         (block.status === "running" || block.status === "waiting_permission"),
     );
   if (runningTool?.kind === "tool_group") {
-    return `Running ${runningTool.toolName}`;
+    return `${runningTool.toolName}${runningTool.target ? ` · ${runningTool.target}` : ""}`;
   }
 
   const bashBlock = [...blocks].reverse().find((block) => block.kind === "bash_output");
   if (bashBlock?.kind === "bash_output") {
-    return `Running ${bashBlock.title}`;
+    return bashBlock.title;
   }
 
   if (blocks.some((block) => block.kind === "thinking")) {
@@ -159,21 +184,15 @@ function deriveRunningAction(blocks: UiRenderBlock[]): string {
   return "Working";
 }
 
-function clipInline(value: string, width: number): string {
-  if (width <= 0) {
-    return "";
+function formatNoticeLabel(level: "info" | "warning" | "error"): string {
+  switch (level) {
+    case "warning":
+      return "warn";
+    case "error":
+      return "error";
+    default:
+      return "note";
   }
-
-  const chars = Array.from(value);
-  if (chars.length <= width) {
-    return value;
-  }
-
-  if (width === 1) {
-    return chars[0] ?? "";
-  }
-
-  return `${chars.slice(0, width - 1).join("")}…`;
 }
 
 function getToneColor(

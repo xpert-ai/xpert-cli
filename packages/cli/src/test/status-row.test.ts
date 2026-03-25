@@ -4,6 +4,7 @@ import {
   deriveStatusRowModel,
   formatElapsed,
 } from "../ui/ink/status-row.js";
+import { stringDisplayWidth } from "../ui/display-width.js";
 
 describe("status row", () => {
   it("renders a running state with elapsed time and abort hint", () => {
@@ -21,7 +22,8 @@ describe("status row", () => {
       spinnerFrame: "◐",
     });
 
-    expect(model.action).toBe("Running Bash");
+    expect(model.badge).toBe("[◐]");
+    expect(model.action).toBe("Bash");
     expect(model.elapsed).toBe("12s");
     expect(model.hint).toContain("Ctrl+C aborts");
   });
@@ -56,8 +58,8 @@ describe("status row", () => {
     });
 
     expect(model.action).toBe("Ready");
-    expect(model.hint).toContain("Terminal scrollback keeps history");
-    expect(Array.from(line).length).toBeLessThanOrEqual(40);
+    expect(model.hint).toContain("Scrollback keeps history");
+    expect(stringDisplayWidth(line)).toBeLessThanOrEqual(40);
   });
 
   it("formats long elapsed times compactly", () => {

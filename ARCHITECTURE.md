@@ -34,8 +34,9 @@
    - append-only committed history rendered through Ink `Static`
    - startup / resume replay of the recent clipped local turn transcript into committed history
    - a live pending-turn tail rendered below committed history while streamed assistant/tool output is appended into host scrollback during the turn
-   - inline local slash-command output for `/status`, `/tools`, and `/session`
-   - an inline busy status row, permission prompt, and composer
+   - inline local slash-command output for `/status`, `/tools`, and `/session`, rendered with the same inspector data used by the optional Ink panels
+   - a shared block renderer for committed history and the live tail, with clearer tool / bash / diff / notice hierarchy
+   - an inline busy status row, permission prompt, and composer that clip by terminal display width instead of raw string length
 14.1. Because interactive TTY no longer enters the terminal alternate buffer:
    - committed history lands in normal host terminal scrollback
    - terminal mouse-wheel scrolling and the terminal scrollbar become the main history navigation surface again

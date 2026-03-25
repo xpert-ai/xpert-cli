@@ -7,9 +7,9 @@ Local-first terminal coding agent MVP for the `xpert` platform.
 - `xpert` interactive TTY mode with an inline Ink UI:
   - inline Ink layout without entering the terminal alternate buffer
   - committed history appended into normal terminal scrollback
-  - block/message rendering for user, assistant, tool, bash, diff, and notices
-  - `/status`, `/tools`, and `/session` rendered inline from local state
-  - busy status row, inline permission prompt, and fixed composer
+  - denser committed/live block rendering for user, assistant, tool, bash, diff, notices, and inline inspectors
+  - `/status`, `/tools`, and `/session` rendered inline from local state as inspector-style history cards
+  - display-width-aware status row, inline permission prompt, and fixed composer
 - `xpert -p "..."` single-turn mode
 - `xpert auth status`
 - `xpert doctor`
@@ -125,9 +125,9 @@ When both `stdin` and `stdout` are real TTYs, interactive mode now starts an inl
 - committed history is appended above the live footer and remains in normal terminal scrollback
 - on restart or `resume`, the CLI replays the recent clipped turn transcript from the local session into committed history before new input
 - the current pending turn stays live near the bottom while streamed assistant/tool output is also appended into terminal scrollback during the turn
-- `/status`, `/tools`, and `/session` render as inline local history blocks
-- the permission prompt stays inline
-- the composer remains at the bottom of the live footer
+- `/status`, `/tools`, and `/session` render as inline local inspector cards
+- the permission prompt stays inline with tool / risk / scope context
+- the composer and status row stay single-line and clip by terminal display width
 
 The main history surface is now the host terminal scrollback, so terminal mouse-wheel scrolling and the terminal scrollbar work naturally again.
 
@@ -178,7 +178,7 @@ Inside the Ink interactive TTY UI:
 - `/session` prints inline session output from local turn transcripts
 - `/exit` closes the interactive session
 
-These commands are resolved locally from runtime state and do not call the model. In `-p` and non-TTY flows, the existing text renderer remains unchanged.
+These commands are resolved locally from runtime state and do not call the model. In interactive mode they render as inline inspector-style history cards; in `-p` and non-TTY flows, the existing text renderer remains unchanged.
 
 ## Interactive Keys
 

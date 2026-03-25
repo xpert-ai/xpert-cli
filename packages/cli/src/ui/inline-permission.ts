@@ -9,6 +9,11 @@ import {
 
 export interface InlinePermissionState {
   message: string;
+  toolName: string;
+  riskLevel: PermissionRequest["riskLevel"];
+  target?: string;
+  reason?: string;
+  scope?: string;
   choices: PermissionPromptChoice[];
   selectedIndex: number;
 }
@@ -49,6 +54,11 @@ export class InlinePermissionController {
 
     this.#state = {
       message: buildPermissionMessage(request),
+      toolName: request.toolName,
+      riskLevel: request.riskLevel,
+      target: request.target,
+      reason: request.reason,
+      scope: request.scope,
       choices: buildPermissionPromptChoices(request),
       selectedIndex:
         request.riskLevel === "dangerous"

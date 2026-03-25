@@ -278,7 +278,7 @@ describe("interactive inline flow", () => {
     expect(effect.historyItems).toHaveLength(1);
     expect(effect.historyItems[0]).toMatchObject({
       type: "status_view",
-      title: "Status",
+      title: "Local Status · /status",
     });
   });
 });

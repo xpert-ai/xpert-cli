@@ -587,7 +587,7 @@ function getTerminalSize(stdout: NodeJS.WriteStream): {
 function resolvePermissionHeight(input: {
   choices: Array<unknown>;
 }): number {
-  return Math.min(MAX_PERMISSION_HEIGHT, Math.max(2, input.choices.length + 2));
+  return Math.min(MAX_PERMISSION_HEIGHT, Math.max(3, input.choices.length + 3));
 }
 
 export async function runInteractiveSlashCommand(

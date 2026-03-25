@@ -7,6 +7,7 @@ import {
   buildComposerStatusLine,
 } from "../ui/ink/composer.js";
 import { buildPermissionPromptLines } from "../ui/ink/permission-prompt.js";
+import { stringDisplayWidth } from "../ui/display-width.js";
 
 describe("Ink layout helpers", () => {
   it("keeps header, status row, and composer reserved inside the height budget", () => {
@@ -94,10 +95,16 @@ describe("Ink layout helpers", () => {
       value: "",
       focused: true,
     });
-    const running = buildComposerStatusLine(40, "waiting for permission... Esc denies, Ctrl+C aborts the turn.");
+    const running = buildComposerStatusLine(
+      40,
+      "[RUNNING] Turn active · Ctrl+C aborts",
+    );
 
-    expect(Array.from(`${idle.prompt}${idle.body}${idle.cursor}`).length).toBeLessThanOrEqual(40);
-    expect(Array.from(running).length).toBeLessThanOrEqual(40);
+    expect(idle.badge).toBe("[READY] ");
+    expect(
+      stringDisplayWidth(`${idle.badge}${idle.prompt}${idle.body}${idle.cursor}`),
+    ).toBeLessThanOrEqual(40);
+    expect(stringDisplayWidth(running)).toBeLessThanOrEqual(40);
   });
 
   it("renders a compact permission prompt that still fits the allocated rows", () => {
@@ -106,6 +113,11 @@ describe("Ink layout helpers", () => {
       height: 5,
       state: {
         message: "Patch wants to run on src/app.ts (modify src/app.ts) [scope: Patch src/app.ts]",
+        toolName: "Patch",
+        riskLevel: "moderate",
+        target: "src/app.ts",
+        reason: "modify src/app.ts",
+        scope: "Patch src/app.ts",
         selectedIndex: 0,
         choices: [
           { title: "Allow once", outcome: "allow_once" },
@@ -117,6 +129,10 @@ describe("Ink layout helpers", () => {
     });
 
     expect(lines).toHaveLength(5);
-    expect(lines.every((line) => Array.from(line.text).length <= 40)).toBe(true);
+    expect(lines[0]?.text).toContain("Permission · Patch · moderate");
+    expect(lines[0]?.text.endsWith("…")).toBe(true);
+    expect(lines.at(-1)?.text).toBe("  Deny for session");
+    expect(lines.some((line) => line.text.includes("Enter confirms"))).toBe(false);
+    expect(lines.every((line) => stringDisplayWidth(line.text) <= 40)).toBe(true);
   });
 });

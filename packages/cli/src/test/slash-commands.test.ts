@@ -40,7 +40,7 @@ describe("slash commands", () => {
       type: "history",
       item: {
         type: "status_view",
-        title: "Status",
+        title: "Local Status · /status",
       },
     });
 
@@ -48,11 +48,12 @@ describe("slash commands", () => {
       throw new Error("Expected /status to return a status view");
     }
 
+    expect(result.item.lines).toContain("Runtime:");
     expect(result.item.lines).toContain("cwd: /tmp/project/packages/cli");
     expect(result.item.lines).toContain("projectRoot: /tmp/project");
     expect(result.item.lines).toContain("approvalMode: default");
-    expect(result.item.lines).toContain("git: dirty (1 changes)");
-    expect(result.item.lines).toContain("  - packages/cli/src/cli.ts");
+    expect(result.item.lines).toContain("summary: dirty (1 changes)");
+    expect(result.item.lines).toContain("- packages/cli/src/cli.ts");
   });
 
   it("renders /tools from the local registry and recent tool history", async () => {
@@ -97,7 +98,7 @@ describe("slash commands", () => {
       type: "history",
       item: {
         type: "tools_view",
-        title: "Tools",
+        title: "Local Tools · /tools",
       },
     });
 
@@ -105,9 +106,12 @@ describe("slash commands", () => {
       throw new Error("Expected /tools to return a tools view");
     }
 
-    expect(result.item.lines).toContain("  - Read: Read a file from the local project with line numbers.");
-    expect(result.item.lines).toContain("  - Patch [success] patched src/app.ts");
-    expect(result.item.lines).toContain("  - Bash [error] exit 1");
+    expect(result.item.lines).toContain("Available Tools:");
+    expect(result.item.lines).toContain(
+      "- Read: Read a file from the local project with line numbers.",
+    );
+    expect(result.item.lines).toContain("- Patch [success] patched src/app.ts");
+    expect(result.item.lines).toContain("- Bash [error] exit 1");
   });
 
   it("renders /session from session.turns", async () => {
@@ -154,7 +158,7 @@ describe("slash commands", () => {
       type: "history",
       item: {
         type: "session_view",
-        title: "Session",
+        title: "Local Session · /session",
       },
     });
 
@@ -163,14 +167,14 @@ describe("slash commands", () => {
     }
 
     expect(result.item.lines[0]).toContain("COMPLETED 2026-03-23T00:00:10.000Z");
-    expect(result.item.lines).toContain("  prompt: Summarize cli.ts");
+    expect(result.item.lines).toContain("prompt: Summarize cli.ts");
     expect(result.item.lines).toContain(
-      "  tools: Read [success] read packages/cli/src/cli.ts",
+      "tools: Read [success] read packages/cli/src/cli.ts",
     );
     expect(result.item.lines).toContain(
-      "  permissions: Read safe_allow @ Read packages/cli/src/cli.ts",
+      "permissions: Read safe_allow @ Read packages/cli/src/cli.ts",
     );
-    expect(result.item.lines).toContain("  files: packages/cli/src/cli.ts");
+    expect(result.item.lines).toContain("files: packages/cli/src/cli.ts");
   });
 
   it("keeps interactive slash commands inline when the Ink app runs in no-alt-screen mode", async () => {

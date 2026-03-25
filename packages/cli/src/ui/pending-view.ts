@@ -2,6 +2,10 @@ import { parsePatch } from "diff";
 import { summarizeDiff } from "./diff.js";
 import type { PendingTurnEntry, PendingTurnState } from "./history.js";
 import type { ToolCompletionStatus } from "../runtime/turn-events.js";
+import {
+  stringDisplayWidth,
+  truncateDisplayWidth,
+} from "./display-width.js";
 
 export type PendingToolCardStatus =
   | "running"
@@ -432,12 +436,12 @@ export function buildDiffPreview(
         for (const hunk of patch.hunks) {
           rawLines.push({
             kind: "hunk",
-            text: clipInline(formatHunkHeader(hunk), maxLineChars),
+            text: clipDisplayLine(formatHunkHeader(hunk), maxLineChars),
           });
           for (const line of hunk.lines) {
             rawLines.push({
               kind: getDiffLineKind(line),
-              text: clipInline(line, maxLineChars),
+              text: clipDisplayLine(line, maxLineChars),
             });
           }
         }
@@ -488,7 +492,7 @@ function buildToolCardViewModel(
         : undefined,
     status: tool.status,
     summary: clipInline(resolveToolSummary(tool), limits.maxLineChars),
-    activity: activityParts.length > 0 ? activityParts.join(" | ") : undefined,
+    activity: activityParts.length > 0 ? activityParts.join(" · ") : undefined,
   };
 }
 
@@ -497,7 +501,7 @@ function buildBashBlockViewModel(
   limits: PendingViewLimits,
 ): PendingBashBlockViewModel {
   const visibleLines = tail(tool.bashLines, limits.maxBashLinesPerBlock).map((line) =>
-    clipInline(line, limits.maxLineChars),
+    clipDisplayLine(line, limits.maxLineChars),
   );
   return {
     key: `${tool.key}:bash`,
@@ -580,7 +584,8 @@ function buildTextPreview(
     return undefined;
   }
 
-  if (joined.length <= maxChars) {
+  const displayWidth = stringDisplayWidth(joined);
+  if (displayWidth <= maxChars) {
     return {
       text: joined,
       hiddenChars: 0,
@@ -588,8 +593,10 @@ function buildTextPreview(
   }
 
   return {
-    text: `...${joined.slice(-(maxChars - 3))}`,
-    hiddenChars: joined.length - maxChars,
+    text: truncateDisplayWidth(joined, maxChars, {
+      position: "start",
+    }),
+    hiddenChars: Math.max(0, displayWidth - maxChars),
   };
 }
 
@@ -605,7 +612,7 @@ function buildFallbackDiffFiles(
     .slice(0, maxLinesPerFile)
     .map((line) => ({
       kind: getDiffLineKind(line),
-      text: clipInline(line, maxLineChars),
+      text: clipDisplayLine(line, maxLineChars),
     }));
 
   return [
@@ -688,9 +695,15 @@ function tail<T>(items: T[], count: number): T[] {
 }
 
 export function clipInline(value: string, maxChars: number): string {
-  if (value.length <= maxChars) {
-    return value;
-  }
+  return truncateDisplayWidth(
+    value.replace(/\s+/g, " ").trim(),
+    Math.max(1, maxChars),
+  );
+}
 
-  return `${value.slice(0, Math.max(0, maxChars - 3))}...`;
+function clipDisplayLine(value: string, maxChars: number): string {
+  return truncateDisplayWidth(
+    value.replace(/\t/g, "    "),
+    Math.max(1, maxChars),
+  );
 }

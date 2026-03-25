@@ -70,7 +70,7 @@ export async function runSlashCommand(
           }
         : {
             type: "history",
-            item: await buildStatusView(context),
+            item: panelDataToHistoryItem(data),
           };
     }
     case "tools": {
@@ -83,7 +83,7 @@ export async function runSlashCommand(
           }
         : {
             type: "history",
-            item: buildToolsView(context),
+            item: panelDataToHistoryItem(data),
           };
     }
     case "session": {
@@ -96,7 +96,7 @@ export async function runSlashCommand(
           }
         : {
             type: "history",
-            item: buildSessionView(context.session),
+            item: panelDataToHistoryItem(data),
           };
     }
     default:
@@ -170,43 +170,7 @@ export async function buildStatusPanelData(
 export async function buildStatusView(
   context: SlashCommandContext,
 ): Promise<UiHistoryItemInput> {
-  const getLocalContext = context.deps?.buildRunLocalContext ?? buildRunLocalContext;
-  const localContext = await getLocalContext({
-    config: context.config,
-    session: context.session,
-  });
-
-  const lines = [
-    `cwd: ${localContext.cwd}`,
-    `projectRoot: ${localContext.projectRoot}`,
-    `sessionId: ${context.session.sessionId}`,
-    `threadId: ${context.session.threadId ?? "(none)"}`,
-    `runId: ${context.session.runId ?? "(none)"}`,
-    `assistant: ${context.config.assistantId ?? "(unconfigured)"}`,
-    `model: ${context.config.defaultModel ?? "(unconfigured)"}`,
-    `approvalMode: ${context.config.approvalMode}`,
-    `git: ${summarizeGit(localContext.git)}`,
-    "",
-    "Recent changed files:",
-    ...formatIndentedList(
-      localContext.workingSet.recentFiles,
-      (filePath) => filePath,
-      "  - none",
-    ),
-    "",
-    "Recent tool calls:",
-    ...formatIndentedList(
-      localContext.workingSet.recentToolCalls,
-      (entry) => `${entry.toolName} [${entry.status}] ${entry.summary}`,
-      "  - none",
-    ),
-  ];
-
-  return {
-    type: "status_view",
-    title: "Status",
-    lines,
-  };
+  return panelDataToHistoryItem(await buildStatusPanelData(context));
 }
 
 export function buildToolsPanelData(context: SlashCommandContext): InspectorPanelData {
@@ -257,37 +221,7 @@ export function buildToolsPanelData(context: SlashCommandContext): InspectorPane
 }
 
 export function buildToolsView(context: SlashCommandContext): UiHistoryItemInput {
-  const registryFactory = context.deps?.createToolRegistry ?? createToolRegistry;
-  const registry = context.toolRegistry ?? registryFactory();
-  const tools = [...registry.tools.values()];
-  const failedCalls = collectRecentFailedToolCalls(context.session.turns);
-
-  return {
-    type: "tools_view",
-    title: "Tools",
-    lines: [
-      "Available tools:",
-      ...formatIndentedList(
-        tools,
-        (tool) => `${tool.name}: ${tool.description}`,
-        "  - none",
-      ),
-      "",
-      "Recent tool calls:",
-      ...formatIndentedList(
-        context.session.recentToolCalls,
-        (entry) => `${entry.toolName} [${entry.status}] ${entry.summary}`,
-        "  - none",
-      ),
-      "",
-      "Recent failed tool calls:",
-      ...formatIndentedList(
-        failedCalls,
-        (entry) => `${entry.toolName} [${entry.status}] ${entry.resultSummary}`,
-        "  - none",
-      ),
-    ],
-  };
+  return panelDataToHistoryItem(buildToolsPanelData(context));
 }
 
 export function buildSessionPanelData(
@@ -355,11 +289,7 @@ export function buildSessionPanelData(
 }
 
 export function buildSessionView(session: Pick<CliSessionState, "turns">): UiHistoryItemInput {
-  return {
-    type: "session_view",
-    title: "Session",
-    lines: buildSessionSummaryLines(session.turns),
-  };
+  return panelDataToHistoryItem(buildSessionPanelData(session));
 }
 
 export function buildSessionSummaryLines(turns: TurnTranscript[]): string[] {
@@ -493,18 +423,6 @@ function formatList<T>(
   return items.map((item) => `- ${renderItem(item)}`);
 }
 
-function formatIndentedList<T>(
-  items: readonly T[],
-  renderItem: (item: T) => string,
-  emptyLine: string,
-): string[] {
-  if (items.length === 0) {
-    return [emptyLine];
-  }
-
-  return items.map((item) => `  - ${renderItem(item)}`);
-}
-
 function flattenInspectorSections(
   sections: InspectorPanelSection[],
 ): string[] {
@@ -512,7 +430,7 @@ function flattenInspectorSections(
 
   for (const section of sections) {
     lines.push(`${section.title}:`);
-    lines.push(...section.lines.map((line) => `  ${line}`));
+    lines.push(...section.lines);
     lines.push("");
   }
 
@@ -530,19 +448,19 @@ function panelDataToHistoryItem(data: InspectorPanelData): UiHistoryItemInput {
     case "status":
       return {
         type: "status_view",
-        title: data.title,
+        title: "Local Status · /status",
         lines,
       };
     case "tools":
       return {
         type: "tools_view",
-        title: data.title,
+        title: "Local Tools · /tools",
         lines,
       };
     case "session":
       return {
         type: "session_view",
-        title: data.title,
+        title: "Local Session · /session",
         lines,
       };
   }

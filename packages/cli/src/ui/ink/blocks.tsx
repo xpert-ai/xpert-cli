@@ -7,6 +7,12 @@ import type {
   UiSectionBlock,
   UiToolGroupBlock,
 } from "../render-blocks.js";
+import {
+  stringDisplayWidth,
+  takeHeadDisplayWidthChunk,
+  truncateDisplayWidth,
+  wrapDisplayWidth,
+} from "../display-width.js";
 
 export type TextRowTone =
   | "default"
@@ -21,6 +27,8 @@ export interface TextRow {
   text: string;
   tone?: TextRowTone;
   bold?: boolean;
+  prefix?: string;
+  continuationPrefix?: string;
 }
 
 export function BlockView(props: {
@@ -77,8 +85,10 @@ function buildBlockRows(block: UiRenderBlock): TextRow[] {
   switch (block.kind) {
     case "info":
       return withGap(
-        toTextRows(block.id, block.text, {
+        toBodyRows(block.id, block.text, {
           tone: "dim",
+          prefix: "· ",
+          continuationPrefix: "  ",
         }),
         block.id,
       );
@@ -87,11 +97,11 @@ function buildBlockRows(block: UiRenderBlock): TextRow[] {
         [
           {
             key: `${block.id}:title`,
-            text: block.pending ? "You · live" : "You",
+            text: block.pending ? "Prompt · live" : "Prompt",
             tone: "accent",
             bold: true,
           },
-          ...toIndentedRows(`${block.id}:body`, block.text),
+          ...toBodyRows(`${block.id}:body`, block.text),
         ],
         block.id,
       );
@@ -99,15 +109,21 @@ function buildBlockRows(block: UiRenderBlock): TextRow[] {
       return withGap(
         [
           titleRow(block.id, block.pending ? "Assistant · live" : "Assistant"),
-          ...toIndentedRows(`${block.id}:body`, block.text),
+          ...toBodyRows(`${block.id}:body`, block.text),
         ],
         block.id,
       );
     case "thinking":
       return withGap(
         [
-          titleRow(block.id, block.pending ? "Thinking · live" : "Thinking"),
-          ...toIndentedRows(`${block.id}:body`, block.text, "dim"),
+          titleRow(
+            block.id,
+            block.pending ? "Thinking · live" : "Thinking",
+            "dim",
+          ),
+          ...toBodyRows(`${block.id}:body`, block.text, {
+            tone: "dim",
+          }),
         ],
         block.id,
       );
@@ -128,31 +144,28 @@ function buildToolGroupRows(block: UiToolGroupBlock): TextRow[] {
   const rows: TextRow[] = [
     {
       key: `${block.id}:title`,
-      text: `[${formatStatus(block.status)}] ${block.toolName}${block.target ? ` · ${block.target}` : ""}${block.pending ? " · live" : ""}`,
+      text: [
+        "Tool",
+        block.toolName,
+        block.target,
+        formatStatus(block.status),
+        block.pending ? "live" : undefined,
+      ]
+        .filter((part): part is string => Boolean(part))
+        .join(" · "),
       tone: getStatusTone(block.status),
       bold: true,
     },
   ];
 
   if (block.detail) {
-    rows.push({
-      key: `${block.id}:detail`,
-      text: `  args: ${block.detail}`,
-      tone: "dim",
-    });
+    rows.push(metaRow(`${block.id}:detail`, "args", block.detail, "dim"));
   }
   if (block.summary) {
-    rows.push({
-      key: `${block.id}:summary`,
-      text: `  summary: ${block.summary}`,
-    });
+    rows.push(metaRow(`${block.id}:summary`, "result", block.summary));
   }
   if (block.activity) {
-    rows.push({
-      key: `${block.id}:activity`,
-      text: `  activity: ${block.activity}`,
-      tone: "dim",
-    });
+    rows.push(metaRow(`${block.id}:activity`, "activity", block.activity, "dim"));
   }
 
   return rows;
@@ -162,34 +175,42 @@ function buildBashRows(block: UiBashOutputBlock): TextRow[] {
   const rows: TextRow[] = [
     {
       key: `${block.id}:title`,
-      text: `[${formatStatus(block.status)}] ${block.title}${block.pending ? " · live" : ""}`,
+      text: [
+        "Log",
+        block.title,
+        formatStatus(block.status),
+        block.pending ? "live" : undefined,
+      ]
+        .filter((part): part is string => Boolean(part))
+        .join(" · "),
       tone: getStatusTone(block.status),
       bold: true,
     },
   ];
 
   if (block.summary) {
-    rows.push({
-      key: `${block.id}:summary`,
-      text: `  summary: ${block.summary}`,
-      tone: "dim",
-    });
+    rows.push(metaRow(`${block.id}:summary`, "result", block.summary, "dim"));
   }
 
   block.lines.forEach((line, index) => {
     rows.push({
       key: `${block.id}:line:${index}`,
-      text: `  ${line}`,
+      text: line,
+      prefix: "│ ",
+      continuationPrefix: "│ ",
       tone: "dim",
     });
   });
 
   if (block.hiddenLineCount > 0) {
-    rows.push({
-      key: `${block.id}:hidden`,
-      text: `  +${block.hiddenLineCount} more line${block.hiddenLineCount === 1 ? "" : "s"}`,
-      tone: "dim",
-    });
+    rows.push(
+      metaRow(
+        `${block.id}:hidden`,
+        "more",
+        `+${block.hiddenLineCount} line${block.hiddenLineCount === 1 ? "" : "s"}`,
+        "dim",
+      ),
+    );
   }
 
   return rows;
@@ -199,64 +220,74 @@ function buildDiffRows(block: UiDiffPreviewBlock): TextRow[] {
   const rows: TextRow[] = [
     {
       key: `${block.id}:title`,
-      text: `${block.status ? `[${formatStatus(block.status)}] ` : ""}${block.title}${block.pending ? " · live" : ""}`,
+      text: [
+        "Diff",
+        block.title,
+        block.status ? formatStatus(block.status) : undefined,
+        block.pending ? "live" : undefined,
+      ]
+        .filter((part): part is string => Boolean(part))
+        .join(" · "),
       tone: block.status ? getStatusTone(block.status) : "accent",
       bold: true,
     },
   ];
 
   if (block.summary) {
-    rows.push({
-      key: `${block.id}:summary`,
-      text: `  summary: ${block.summary}`,
-      tone: "dim",
-    });
+    rows.push(metaRow(`${block.id}:summary`, "files", block.summary, "dim"));
   }
 
   block.files.forEach((file, fileIndex) => {
-    rows.push({
-      key: `${block.id}:file:${fileIndex}`,
-      text: `  ${file.path}`,
-      tone: "accent",
-    });
+    rows.push(metaRow(`${block.id}:file:${fileIndex}`, "file", file.path, "accent"));
     file.lines.forEach((line, lineIndex) => {
       rows.push({
         key: `${block.id}:file:${fileIndex}:line:${lineIndex}`,
-        text: `    ${line.text}`,
+        text: line.text,
+        prefix: "│ ",
+        continuationPrefix: "│ ",
         tone: getDiffTone(line.kind),
       });
     });
     if (file.hiddenLineCount > 0) {
-      rows.push({
-        key: `${block.id}:file:${fileIndex}:hidden`,
-        text: `    +${file.hiddenLineCount} more line${file.hiddenLineCount === 1 ? "" : "s"}`,
-        tone: "dim",
-      });
+      rows.push(
+        metaRow(
+          `${block.id}:file:${fileIndex}:hidden`,
+          "more",
+          `+${file.hiddenLineCount} line${file.hiddenLineCount === 1 ? "" : "s"}`,
+          "dim",
+        ),
+      );
     }
   });
 
   if (block.hiddenFileCount > 0) {
-    rows.push({
-      key: `${block.id}:hidden`,
-      text: `  +${block.hiddenFileCount} more file${block.hiddenFileCount === 1 ? "" : "s"}`,
-      tone: "dim",
-    });
+    rows.push(
+      metaRow(
+        `${block.id}:hidden`,
+        "more",
+        `+${block.hiddenFileCount} file${block.hiddenFileCount === 1 ? "" : "s"}`,
+        "dim",
+      ),
+    );
   }
 
   return rows;
 }
 
 function buildNoticeRows(block: UiNoticeBlock): TextRow[] {
+  const tone =
+    block.level === "error"
+      ? "error"
+      : block.level === "warning"
+        ? "warning"
+        : "accent";
   const rows: TextRow[] = [
     {
       key: `${block.id}:title`,
-      text: `${block.title}${block.pending ? " · live" : ""}`,
-      tone:
-        block.level === "error"
-          ? "error"
-          : block.level === "warning"
-            ? "warning"
-            : "accent",
+      text: [block.title, block.code ? `[${block.code}]` : undefined, block.pending ? "live" : undefined]
+        .filter((part): part is string => Boolean(part))
+        .join(" · "),
+      tone,
       bold: true,
     },
   ];
@@ -264,20 +295,11 @@ function buildNoticeRows(block: UiNoticeBlock): TextRow[] {
   block.messages.forEach((message, index) => {
     rows.push({
       key: `${block.id}:message:${index}`,
-      text: `  ${message}`,
-      tone:
-        block.level === "error"
-          ? "error"
-          : block.level === "warning"
-            ? "warning"
-            : "default",
+      text: message,
+      prefix: "│ ",
+      continuationPrefix: "│ ",
+      tone: block.level === "info" ? "default" : tone,
     });
-  });
-
-  rows.push({
-    key: `${block.id}:scope`,
-    text: `  scope: ${block.scope}`,
-    tone: "dim",
   });
 
   return rows;
@@ -287,30 +309,56 @@ function buildSectionRows(block: UiSectionBlock): TextRow[] {
   const rows: TextRow[] = [titleRow(block.id, block.title)];
 
   block.lines.forEach((line, index) => {
+    if (line.length === 0) {
+      rows.push({
+        key: `${block.id}:line:${index}`,
+        text: "",
+      });
+      return;
+    }
+
+    if (isSectionHeading(line)) {
+      rows.push({
+        key: `${block.id}:line:${index}`,
+        text: line.slice(0, -1),
+        tone: "accent",
+        bold: true,
+      });
+      return;
+    }
+
     rows.push({
       key: `${block.id}:line:${index}`,
       text: line,
+      prefix: "│ ",
+      continuationPrefix: "│ ",
     });
   });
 
   return rows;
 }
 
-function titleRow(keyPrefix: string, text: string): TextRow {
+function titleRow(
+  keyPrefix: string,
+  text: string,
+  tone: TextRowTone = "accent",
+): TextRow {
   return {
     key: `${keyPrefix}:title`,
     text,
-    tone: "accent",
+    tone,
     bold: true,
   };
 }
 
-function toTextRows(
+function toBodyRows(
   keyPrefix: string,
   text: string,
   options: {
     tone?: TextRowTone;
     bold?: boolean;
+    prefix?: string;
+    continuationPrefix?: string;
   } = {},
 ): TextRow[] {
   return normalizeLines(text).map((line, index) => ({
@@ -318,18 +366,8 @@ function toTextRows(
     text: line,
     tone: options.tone,
     bold: options.bold,
-  }));
-}
-
-function toIndentedRows(
-  keyPrefix: string,
-  text: string,
-  tone: TextRowTone = "default",
-): TextRow[] {
-  return normalizeLines(text).map((line, index) => ({
-    key: `${keyPrefix}:${index}`,
-    text: `  ${line}`,
-    tone,
+    prefix: options.prefix ?? "│ ",
+    continuationPrefix: options.continuationPrefix ?? options.prefix ?? "│ ",
   }));
 }
 
@@ -349,23 +387,24 @@ function wrapTextRows(rows: TextRow[], width: number): TextRow[] {
 
   for (const row of rows) {
     const normalizedRows = normalizeLines(row.text.replace(/\t/g, "    "));
+    const prefix = row.prefix?.replace(/\t/g, "    ");
+    const continuationPrefix =
+      row.continuationPrefix?.replace(/\t/g, "    ") ?? prefix;
 
     for (const [rowIndex, normalizedRow] of normalizedRows.entries()) {
-      const chars = Array.from(normalizedRow);
-      if (chars.length === 0) {
+      const segments = wrapPrefixedText(
+        normalizedRow,
+        resolvedWidth,
+        prefix,
+        continuationPrefix,
+      );
+      for (const [segmentIndex, segment] of segments.entries()) {
         wrapped.push({
           ...row,
-          key: `${row.key}:row:${rowIndex}:0`,
-          text: "",
-        });
-        continue;
-      }
-
-      for (let offset = 0; offset < chars.length; offset += resolvedWidth) {
-        wrapped.push({
-          ...row,
-          key: `${row.key}:row:${rowIndex}:${offset}`,
-          text: chars.slice(offset, offset + resolvedWidth).join(""),
+          key: `${row.key}:row:${rowIndex}:${segmentIndex}`,
+          text: segment,
+          prefix: undefined,
+          continuationPrefix: undefined,
         });
       }
     }
@@ -380,11 +419,88 @@ function normalizeLines(value: string): string[] {
 
 function formatStatus(status: UiToolGroupBlock["status"]): string {
   switch (status) {
+    case "idle":
+      return "idle";
     case "waiting_permission":
       return "waiting";
     default:
       return status;
   }
+}
+
+function metaRow(
+  key: string,
+  label: string,
+  value: string,
+  tone: TextRowTone = "default",
+): TextRow {
+  const normalizedLabel = `${label}:`.padEnd(10, " ");
+  return {
+    key,
+    text: value,
+    tone,
+    prefix: `│ ${normalizedLabel}`,
+    continuationPrefix: `│ ${" ".repeat(normalizedLabel.length)}`,
+  };
+}
+
+function wrapPrefixedText(
+  text: string,
+  width: number,
+  prefix?: string,
+  continuationPrefix?: string,
+): string[] {
+  if (!prefix) {
+    const segments = wrapDisplayWidth(text, width);
+    return segments.length > 0 ? segments : [""];
+  }
+
+  const prefixWidth = stringDisplayWidth(prefix);
+  if (prefixWidth >= width) {
+    return [truncateDisplayWidth(prefix.trimEnd() || prefix, width)];
+  }
+
+  if (text.length === 0) {
+    return [prefix.trimEnd()];
+  }
+
+  const firstAvailableWidth = Math.max(1, width - prefixWidth);
+  const {
+    segment: firstSegment,
+    consumedLength: firstConsumedLength,
+  } = takeHeadDisplayWidthChunk(text, firstAvailableWidth);
+  const rows = [`${prefix}${firstSegment}`];
+  let remaining = text.slice(firstConsumedLength);
+
+  if (remaining.length === 0) {
+    return rows;
+  }
+
+  const nextPrefix = continuationPrefix ?? prefix;
+  const nextPrefixWidth = stringDisplayWidth(nextPrefix);
+  if (nextPrefixWidth >= width) {
+    rows.push(truncateDisplayWidth(nextPrefix.trimEnd() || nextPrefix, width));
+    return rows;
+  }
+
+  const continuationWidth = Math.max(1, width - nextPrefixWidth);
+  while (remaining.length > 0) {
+    const { segment, consumedLength } = takeHeadDisplayWidthChunk(
+      remaining,
+      continuationWidth,
+    );
+    if (consumedLength <= 0) {
+      break;
+    }
+    rows.push(`${nextPrefix}${segment}`);
+    remaining = remaining.slice(consumedLength);
+  }
+
+  return rows;
+}
+
+function isSectionHeading(value: string): boolean {
+  return !value.startsWith(" ") && value.endsWith(":");
 }
 
 function getStatusTone(status: UiToolGroupBlock["status"]): TextRowTone {

@@ -8,6 +8,7 @@ import {
 } from "../ui/render-blocks.js";
 import { createEmptyPendingTurn } from "../ui/history.js";
 import { applyTurnEvent } from "../ui/ink-state.js";
+import { renderBlockRows } from "../ui/ink/blocks.js";
 
 describe("render block model", () => {
   it("converts history into user, assistant, tool, bash, diff, and notice blocks", () => {
@@ -166,6 +167,67 @@ describe("render block model", () => {
         lines: ["COMPLETED turn=abcd1234", "prompt: summarize cli.ts"],
       },
     ]);
+  });
+
+  it("renders committed blocks with stable prefixes and preserves bash whitespace", () => {
+    const blocks = buildHistoryRenderBlocks([
+      {
+        id: "status-1",
+        type: "status_view",
+        title: "Local Status · /status",
+        lines: ["Runtime:", "cwd: /tmp/project", "- Read: file contents"],
+      },
+      {
+        id: "tool-1",
+        type: "tool_call",
+        callId: "call-1",
+        toolName: "Bash",
+        target: "pnpm test",
+        argsSummary: "command=pnpm test",
+      },
+      {
+        id: "tool-2",
+        type: "bash_line",
+        callId: "call-1",
+        toolName: "Bash",
+        text: "  aligned output",
+      },
+      {
+        id: "tool-3",
+        type: "warning",
+        callId: "call-1",
+        toolName: "Bash",
+        code: "EXIT_NONZERO",
+        text: "tests failed",
+      },
+      {
+        id: "tool-4",
+        type: "tool_result",
+        callId: "call-1",
+        toolName: "Bash",
+        summary: "exit 1",
+        status: "error",
+      },
+    ]);
+
+    const sectionRows = renderBlockRows(blocks[0]!, 60).map((row) => row.text);
+    const toolRows = renderBlockRows(blocks[1]!, 60).map((row) => row.text);
+    const bashRows = renderBlockRows(blocks[2]!, 60).map((row) => row.text);
+    const noticeRows = renderBlockRows(blocks[3]!, 60).map((row) => row.text);
+
+    expect(sectionRows).toEqual([
+      "Local Status · /status",
+      "Runtime",
+      "│ cwd: /tmp/project",
+      "│ - Read: file contents",
+      "",
+    ]);
+    expect(toolRows.join("\n")).toContain("Tool · Bash · pnpm test · error");
+    expect(toolRows.join("\n")).toContain("│ args:");
+    expect(toolRows.join("\n")).toContain("│ result:");
+    expect(bashRows).toContain("│   aligned output");
+    expect(noticeRows[0]).toContain("Bash Warning · [EXIT_NONZERO]");
+    expect(noticeRows).not.toContain("│ scope:");
   });
 
   it("creates append-only committed batches from materialized history items", () => {

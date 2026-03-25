@@ -75,6 +75,7 @@ export interface UiNoticeBlock extends UiRenderBlockBase {
   level: UiNoticeLevel;
   scope: UiNoticeScope;
   title: string;
+  code?: string;
   messages: string[];
 }
 
@@ -278,6 +279,7 @@ export function buildHistoryRenderBlocks(history: UiHistoryItem[]): UiRenderBloc
             scope: item.callId || item.toolName ? "tool" : "session",
             toolName: item.toolName,
           }),
+          code: item.code,
           messages: [item.text],
         });
         return;
@@ -460,6 +462,7 @@ function buildPendingNoticeBlocks(
         scope,
         toolName: entry.toolName,
       }),
+      code: entry.code,
       messages: [entry.text],
     });
   });
