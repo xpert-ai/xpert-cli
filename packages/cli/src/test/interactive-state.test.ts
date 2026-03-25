@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  closeOverlay,
+  createInteractiveUiState,
+  cyclePrimaryFocus,
+  openOverlay,
   resolveEscapeAction,
   resolveInteractiveSlashCommandEffect,
 } from "../ui/interactive-state.js";
@@ -17,7 +21,7 @@ describe("interactive UI state helpers", () => {
     });
 
     expect(effect.shouldExit).toBe(false);
-    expect(effect.panel?.panel).toBe("status");
+    expect(effect.overlay?.panel).toBe("status");
     expect(effect.historyItem).toBeUndefined();
   });
 
@@ -41,9 +45,9 @@ describe("interactive UI state helpers", () => {
       },
     });
 
-    expect(toolsEffect.panel?.panel).toBe("tools");
+    expect(toolsEffect.overlay?.panel).toBe("tools");
     expect(toolsEffect.historyItem).toBeUndefined();
-    expect(sessionEffect.panel?.panel).toBe("session");
+    expect(sessionEffect.overlay?.panel).toBe("session");
     expect(sessionEffect.historyItem).toBeUndefined();
   });
 
@@ -56,28 +60,65 @@ describe("interactive UI state helpers", () => {
       },
     });
 
-    expect(effect.panel).toBeNull();
+    expect(effect.overlay).toBeNull();
     expect(effect.historyItem).toMatchObject({
       type: "warning",
       text: "Unknown command: /oops",
     });
   });
 
+  it("cycles focus between composer and transcript when no overlay is open", () => {
+    const transcript = cyclePrimaryFocus(createInteractiveUiState());
+    const composer = cyclePrimaryFocus(transcript);
+
+    expect(transcript.focus).toBe("transcript");
+    expect(composer.focus).toBe("composer");
+  });
+
+  it("restores the previous focus after closing an overlay", () => {
+    const base = cyclePrimaryFocus(createInteractiveUiState());
+    const opened = openOverlay(base, {
+      panel: "status",
+      title: "Status",
+      sections: [],
+    });
+    const closed = closeOverlay(opened);
+
+    expect(opened.focus).toBe("overlay");
+    expect(closed.focus).toBe("transcript");
+    expect(closed.overlay).toBeNull();
+  });
+
   it("gives permission prompts higher priority than panel closing on Escape", () => {
     expect(
       resolveEscapeAction({
         permissionActive: true,
-        panelOpen: true,
+        overlayOpen: true,
+        focus: "overlay",
+        transcriptFollow: true,
       }),
     ).toBe("deny_permission");
   });
 
-  it("closes the panel on Escape when no permission prompt is active", () => {
+  it("closes the overlay on Escape when no permission prompt is active", () => {
     expect(
       resolveEscapeAction({
         permissionActive: false,
-        panelOpen: true,
+        overlayOpen: true,
+        focus: "overlay",
+        transcriptFollow: true,
       }),
-    ).toBe("close_panel");
+    ).toBe("close_overlay");
+  });
+
+  it("returns the transcript to the composer and follow mode on Escape", () => {
+    expect(
+      resolveEscapeAction({
+        permissionActive: false,
+        overlayOpen: false,
+        focus: "transcript",
+        transcriptFollow: false,
+      }),
+    ).toBe("focus_composer_and_follow");
   });
 });

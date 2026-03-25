@@ -4,6 +4,8 @@ export function Composer(props: {
   width: number;
   value: string;
   turnState: "idle" | "running" | "waiting_permission";
+  focused?: boolean;
+  contextHint?: string;
 }) {
   if (props.turnState === "running") {
     return (
@@ -29,11 +31,15 @@ export function Composer(props: {
   const line = buildComposerInputLine({
     width: props.width,
     value: props.value,
+    focused: props.focused ?? true,
+    contextHint: props.contextHint,
   });
 
   return (
     <Box width={props.width} overflow="hidden">
-      <Text color="cyan">{line.prompt}</Text>
+      <Text color={props.focused === false ? undefined : "cyan"} dimColor={props.focused === false}>
+        {line.prompt}
+      </Text>
       <Text dimColor={!props.value}>{line.body}</Text>
       <Text>{line.cursor}</Text>
     </Box>
@@ -43,11 +49,13 @@ export function Composer(props: {
 const PROMPT = "xpert> ";
 const CURSOR = "█";
 const COMPOSER_PLACEHOLDER =
-  "/status /tools /session /exit | Up/Down history | PgUp/PgDn scroll";
+  "/status /tools /session /exit | Up/Down history | terminal scrollback";
 
 export function buildComposerInputLine(input: {
   width: number;
   value: string;
+  focused?: boolean;
+  contextHint?: string;
 }): {
   prompt: string;
   body: string;
@@ -55,12 +63,16 @@ export function buildComposerInputLine(input: {
 } {
   const width = Math.max(1, input.width);
   const availableBodyWidth = Math.max(0, width - stringWidth(PROMPT) - stringWidth(CURSOR));
-  const source = input.value || COMPOSER_PLACEHOLDER;
+  const source =
+    input.value ||
+    (input.focused === false
+      ? input.contextHint ?? "Composer idle"
+      : COMPOSER_PLACEHOLDER);
 
   return {
     prompt: clipToWidth(PROMPT, Math.max(0, width - stringWidth(CURSOR))),
     body: clipToWidth(source, availableBodyWidth),
-    cursor: width > stringWidth(PROMPT) ? CURSOR : "",
+    cursor: input.focused === false || width <= stringWidth(PROMPT) ? "" : CURSOR,
   };
 }
 
