@@ -8,6 +8,7 @@ import type {
   UiToolGroupBlock,
 } from "../render-blocks.js";
 import {
+  stripAnsi,
   stringDisplayWidth,
   takeHeadDisplayWidthChunk,
   truncateDisplayWidth,
@@ -455,12 +456,14 @@ function wrapPrefixedText(
     return segments.length > 0 ? segments : [""];
   }
 
+  const visibleText = stripAnsi(text);
+
   const prefixWidth = stringDisplayWidth(prefix);
   if (prefixWidth >= width) {
     return [truncateDisplayWidth(prefix.trimEnd() || prefix, width)];
   }
 
-  if (text.length === 0) {
+  if (visibleText.length === 0) {
     return [prefix.trimEnd()];
   }
 
@@ -468,9 +471,9 @@ function wrapPrefixedText(
   const {
     segment: firstSegment,
     consumedLength: firstConsumedLength,
-  } = takeHeadDisplayWidthChunk(text, firstAvailableWidth);
+  } = takeHeadDisplayWidthChunk(visibleText, firstAvailableWidth);
   const rows = [`${prefix}${firstSegment}`];
-  let remaining = text.slice(firstConsumedLength);
+  let remaining = visibleText.slice(firstConsumedLength);
 
   if (remaining.length === 0) {
     return rows;

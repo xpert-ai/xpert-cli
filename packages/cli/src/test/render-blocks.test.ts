@@ -9,6 +9,7 @@ import {
 import { createEmptyPendingTurn } from "../ui/history.js";
 import { applyTurnEvent } from "../ui/ink-state.js";
 import { renderBlockRows } from "../ui/ink/blocks.js";
+import { stringDisplayWidth } from "../ui/display-width.js";
 
 describe("render block model", () => {
   it("converts history into user, assistant, tool, bash, diff, and notice blocks", () => {
@@ -251,5 +252,64 @@ describe("render block model", () => {
         },
       ],
     });
+  });
+
+  it("wraps assistant rows on grapheme boundaries for mixed cjk and emoji text", () => {
+    const rows = renderBlockRows(
+      {
+        id: "assistant-1",
+        kind: "assistant_message",
+        text: "ab👨‍👩‍👧‍👦中cd",
+      },
+      7,
+    );
+
+    expect(rows.map((row) => row.text)).toContain("│ ab👨‍👩‍👧‍👦");
+    expect(rows.map((row) => row.text)).toContain("│ 中cd");
+    expect(rows.every((row) => stringDisplayWidth(row.text) <= 7)).toBe(true);
+  });
+
+  it("keeps bash and diff rows within width even when ansi, cjk, and emoji are mixed", () => {
+    const bashRows = renderBlockRows(
+      {
+        id: "bash-1",
+        kind: "bash_output",
+        title: "pnpm test",
+        status: "running",
+        lines: ["\u001B[31m错误👩🏽‍💻abc\u001B[39m"],
+        hiddenLineCount: 0,
+      },
+      7,
+    );
+    const diffRows = renderBlockRows(
+      {
+        id: "diff-1",
+        kind: "diff_preview",
+        title: "src/app.ts",
+        files: [
+          {
+            path: "src/app.ts",
+            lines: [
+              {
+                kind: "add",
+                text: '+ const title = "你好👨‍👩‍👧‍👦";',
+              },
+            ],
+            hiddenLineCount: 0,
+          },
+        ],
+        hiddenFileCount: 0,
+      },
+      10,
+    );
+
+    expect(bashRows.map((row) => row.text)).toContain("│ 错误");
+    expect(bashRows.map((row) => row.text)).toContain("│ 👩🏽‍💻abc");
+    expect(
+      bashRows.every((row) => !row.text.includes("\u001B")),
+    ).toBe(true);
+    expect(bashRows.every((row) => stringDisplayWidth(row.text) <= 7)).toBe(true);
+    expect(diffRows.some((row) => row.text.includes("👨‍👩‍👧‍👦"))).toBe(true);
+    expect(diffRows.every((row) => stringDisplayWidth(row.text) <= 10)).toBe(true);
   });
 });

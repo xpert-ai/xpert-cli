@@ -107,6 +107,34 @@ describe("Ink layout helpers", () => {
     expect(stringDisplayWidth(running)).toBeLessThanOrEqual(40);
   });
 
+  it("clips unicode composer values without splitting emoji clusters", () => {
+    const line = buildComposerInputLine({
+      width: 23,
+      value: "修复👨‍👩‍👧‍👦emoji错位abc",
+      focused: true,
+    });
+
+    expect(line.body).toBe("修复👨‍👩‍👧‍👦…");
+    expect(
+      stringDisplayWidth(`${line.badge}${line.prompt}${line.body}${line.cursor}`),
+    ).toBeLessThanOrEqual(23);
+  });
+
+  it("clips chinese context hints on a single row when the composer is idle", () => {
+    const line = buildComposerInputLine({
+      width: 26,
+      value: "",
+      focused: false,
+      contextHint: "空闲中 · 等待中文提示 👩🏽‍💻",
+    });
+
+    expect(line.cursor).toBe("");
+    expect(line.body.endsWith("…")).toBe(true);
+    expect(
+      stringDisplayWidth(`${line.badge}${line.prompt}${line.body}${line.cursor}`),
+    ).toBeLessThanOrEqual(26);
+  });
+
   it("renders a compact permission prompt that still fits the allocated rows", () => {
     const lines = buildPermissionPromptLines({
       width: 40,

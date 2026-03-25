@@ -1,19 +1,52 @@
 const ANSI_PATTERN =
   // Covers the ANSI escape sequences we might encounter in terminal-oriented strings.
   /[\u001B\u009B][[\]()#;?]*(?:(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><~]|(?:[a-zA-Z\d]*(?:;[a-zA-Z\d]*)*)?\u0007)/g;
-const COMBINING_MARK_PATTERN = /\p{Mark}/u;
-const EMOJI_PATTERN = /\p{Extended_Pictographic}/u;
+const ZERO_WIDTH_CODE_POINT_PATTERN =
+  /[\p{Control}\p{Mark}\p{Default_Ignorable_Code_Point}]/u;
+const EMOJI_PRESENTATION_PATTERN = /\p{Emoji_Presentation}/u;
+const REGIONAL_INDICATOR_PATTERN = /\p{Regional_Indicator}/u;
+const EXTENDED_PICTOGRAPHIC_PATTERN = /\p{Extended_Pictographic}/u;
+const EMOJI_VARIATION_SELECTOR = "\uFE0F";
+const ZERO_WIDTH_JOINER = "\u200D";
+const KEYCAP_MARK = "\u20E3";
+
+interface DisplayUnit {
+  text: string;
+  width: number;
+}
+
+interface SegmentEntryLike {
+  segment: string;
+}
+
+interface GraphemeSegmenterLike {
+  segment(input: string): Iterable<SegmentEntryLike>;
+}
+
+const IntlWithSegmenter = Intl as typeof Intl & {
+  Segmenter?: new (
+    locales?: string | string[],
+    options?: {
+      granularity: "grapheme";
+    },
+  ) => GraphemeSegmenterLike;
+};
+
+const GRAPHEME_SEGMENTER = IntlWithSegmenter.Segmenter
+  ? new IntlWithSegmenter.Segmenter(undefined, {
+      granularity: "grapheme",
+    })
+  : undefined;
 
 export function stripAnsi(value: string): string {
   return value.replace(ANSI_PATTERN, "");
 }
 
 export function stringDisplayWidth(value: string): number {
-  let width = 0;
-  for (const char of stripAnsi(value)) {
-    width += charDisplayWidth(char);
-  }
-  return width;
+  return segmentDisplayUnits(value).reduce(
+    (width, unit) => width + unit.width,
+    0,
+  );
 }
 
 export function truncateDisplayWidth(
@@ -28,22 +61,24 @@ export function truncateDisplayWidth(
   if (maxWidth <= 0) {
     return "";
   }
-  if (stringDisplayWidth(input) <= maxWidth) {
+  const units = segmentDisplayUnits(input);
+  if (displayUnitsWidth(units) <= maxWidth) {
     return input;
   }
 
-  const ellipsis = options?.ellipsis ?? "…";
-  const ellipsisWidth = stringDisplayWidth(ellipsis);
+  const ellipsis = stripAnsi(options?.ellipsis ?? "…");
+  const ellipsisUnits = segmentDisplayUnits(ellipsis);
+  const ellipsisWidth = displayUnitsWidth(ellipsisUnits);
   if (ellipsisWidth >= maxWidth) {
-    return takeHeadDisplayWidth(ellipsis, maxWidth);
+    return takeHeadDisplayWidthUnits(ellipsisUnits, maxWidth);
   }
 
   const availableWidth = maxWidth - ellipsisWidth;
   if (options?.position === "start") {
-    return `${ellipsis}${takeTailDisplayWidth(input, availableWidth)}`;
+    return `${ellipsis}${takeTailDisplayWidthUnits(units, availableWidth)}`;
   }
 
-  return `${takeHeadDisplayWidth(input, availableWidth)}${ellipsis}`;
+  return `${takeHeadDisplayWidthUnits(units, availableWidth)}${ellipsis}`;
 }
 
 export function wrapDisplayWidth(value: string, maxWidth: number): string[] {
@@ -85,26 +120,41 @@ export function takeHeadDisplayWidthChunk(
     };
   }
 
+  const units = segmentDisplayUnits(input);
   let segment = "";
   let width = 0;
   let consumedLength = 0;
+  let firstUnit: DisplayUnit | undefined;
 
-  for (const char of input) {
-    const nextWidth = charDisplayWidth(char);
-    if (segment.length > 0 && width + nextWidth > maxWidth) {
+  for (const unit of units) {
+    firstUnit ??= unit;
+    if (unit.width === 0) {
+      segment += unit.text;
+      consumedLength += unit.text.length;
+      continue;
+    }
+
+    if (width > 0 && width + unit.width > maxWidth) {
       break;
     }
 
-    if (segment.length === 0 && nextWidth > maxWidth) {
+    if (width === 0 && unit.width > maxWidth) {
       return {
-        segment: truncateDisplayWidth(char, maxWidth, options),
-        consumedLength: char.length,
+        segment: truncateDisplayWidth(unit.text, maxWidth, options),
+        consumedLength: unit.text.length,
       };
     }
 
-    segment += char;
-    width += nextWidth;
-    consumedLength += char.length;
+    segment += unit.text;
+    width += unit.width;
+    consumedLength += unit.text.length;
+  }
+
+  if (segment.length === 0 && firstUnit) {
+    return {
+      segment: truncateDisplayWidth(firstUnit.text, maxWidth, options),
+      consumedLength: firstUnit.text.length,
+    };
   }
 
   return {
@@ -113,81 +163,131 @@ export function takeHeadDisplayWidthChunk(
   };
 }
 
-function takeHeadDisplayWidth(value: string, maxWidth: number): string {
+function takeHeadDisplayWidthUnits(units: DisplayUnit[], maxWidth: number): string {
   if (maxWidth <= 0) {
     return "";
   }
 
   let result = "";
   let width = 0;
-  for (const char of value) {
-    const nextWidth = charDisplayWidth(char);
-    if (result.length > 0 && width + nextWidth > maxWidth) {
+  for (const unit of units) {
+    if (unit.width === 0) {
+      result += unit.text;
+      continue;
+    }
+
+    if (width > 0 && width + unit.width > maxWidth) {
       break;
     }
-    if (result.length === 0 && nextWidth > maxWidth) {
+
+    if (width === 0 && unit.width > maxWidth) {
       return "";
     }
-    result += char;
-    width += nextWidth;
+
+    result += unit.text;
+    width += unit.width;
   }
 
   return result;
 }
 
-function takeTailDisplayWidth(value: string, maxWidth: number): string {
+function takeTailDisplayWidthUnits(units: DisplayUnit[], maxWidth: number): string {
   if (maxWidth <= 0) {
     return "";
   }
 
-  const chars = [...value];
   const tail: string[] = [];
   let width = 0;
 
-  for (let index = chars.length - 1; index >= 0; index -= 1) {
-    const char = chars[index];
-    if (!char) {
+  for (let index = units.length - 1; index >= 0; index -= 1) {
+    const unit = units[index];
+    if (!unit) {
       continue;
     }
 
-    const nextWidth = charDisplayWidth(char);
-    if (tail.length > 0 && width + nextWidth > maxWidth) {
+    if (unit.width === 0) {
+      tail.unshift(unit.text);
+      continue;
+    }
+
+    if (width > 0 && width + unit.width > maxWidth) {
       break;
     }
-    if (tail.length === 0 && nextWidth > maxWidth) {
+
+    if (width === 0 && unit.width > maxWidth) {
       return "";
     }
-    tail.unshift(char);
-    width += nextWidth;
+
+    tail.unshift(unit.text);
+    width += unit.width;
   }
 
   return tail.join("");
 }
 
-function charDisplayWidth(char: string): number {
-  const codePoint = char.codePointAt(0);
-  if (!codePoint) {
+function segmentDisplayUnits(value: string): DisplayUnit[] {
+  return segmentGraphemes(stripAnsi(value)).map((segment) => ({
+    text: segment,
+    width: graphemeDisplayWidth(segment),
+  }));
+}
+
+function displayUnitsWidth(units: DisplayUnit[]): number {
+  return units.reduce((width, unit) => width + unit.width, 0);
+}
+
+function segmentGraphemes(value: string): string[] {
+  if (!value) {
+    return [];
+  }
+
+  if (!GRAPHEME_SEGMENTER) {
+    return [...value];
+  }
+
+  return Array.from(
+    GRAPHEME_SEGMENTER.segment(value),
+    (entry) => entry.segment,
+  );
+}
+
+function graphemeDisplayWidth(grapheme: string): number {
+  let hasVisibleCodePoint = false;
+  let hasFullWidthCodePoint = false;
+
+  for (const codePointText of [...grapheme]) {
+    if (ZERO_WIDTH_CODE_POINT_PATTERN.test(codePointText)) {
+      continue;
+    }
+
+    hasVisibleCodePoint = true;
+
+    const codePoint = codePointText.codePointAt(0);
+    if (codePoint && isFullWidthCodePoint(codePoint)) {
+      hasFullWidthCodePoint = true;
+    }
+  }
+
+  if (!hasVisibleCodePoint) {
     return 0;
   }
 
-  if (
-    codePoint === 0 ||
-    codePoint === 0x200c ||
-    codePoint === 0x200d ||
-    codePoint === 0xfe0e ||
-    codePoint === 0xfe0f ||
-    codePoint < 0x20 ||
-    (codePoint >= 0x7f && codePoint < 0xa0) ||
-    COMBINING_MARK_PATTERN.test(char)
-  ) {
-    return 0;
-  }
-
-  if (EMOJI_PATTERN.test(char) || isFullWidthCodePoint(codePoint)) {
+  if (isEmojiLikeGrapheme(grapheme) || hasFullWidthCodePoint) {
     return 2;
   }
 
   return 1;
+}
+
+function isEmojiLikeGrapheme(grapheme: string): boolean {
+  return (
+    EMOJI_PRESENTATION_PATTERN.test(grapheme) ||
+    REGIONAL_INDICATOR_PATTERN.test(grapheme) ||
+    grapheme.includes(EMOJI_VARIATION_SELECTOR) ||
+    grapheme.includes(KEYCAP_MARK) ||
+    (grapheme.includes(ZERO_WIDTH_JOINER) &&
+      EXTENDED_PICTOGRAPHIC_PATTERN.test(grapheme))
+  );
 }
 
 // Adapted from the widely used full-width code point heuristic in string-width/is-fullwidth-code-point.
