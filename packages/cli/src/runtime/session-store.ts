@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { PermissionRecord, ToolCallSummary, RiskLevel } from "@xpert-cli/contracts";
@@ -28,6 +28,11 @@ export interface CliSessionState {
   turns: TurnTranscript[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface SessionListOptions {
+  projectRoot?: string;
+  limit?: number;
 }
 
 export class SessionStore {
@@ -68,15 +73,14 @@ export class SessionStore {
   async load(sessionId: string): Promise<CliSessionState | null> {
     try {
       const raw = await readFile(this.getSessionPath(sessionId), "utf8");
-      return normalizeSessionState(JSON.parse(raw));
+      return withCanonicalSessionId(normalizeSessionState(JSON.parse(raw)), sessionId);
     } catch {
       return null;
     }
   }
 
-  async list(): Promise<CliSessionState[]> {
+  async list(options?: SessionListOptions): Promise<CliSessionState[]> {
     await this.ensure();
-    const { readdir } = await import("node:fs/promises");
     const entries = await readdir(this.#sessionDir, { withFileTypes: true });
     const sessions = await Promise.all(
       entries
@@ -84,23 +88,33 @@ export class SessionStore {
         .map((entry) => this.load(entry.name.replace(/\.json$/, ""))),
     );
 
-    return sessions
+    let items = sessions
       .filter((item): item is CliSessionState => Boolean(item))
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+
+    if (options?.projectRoot) {
+      const normalizedRoot = path.resolve(options.projectRoot);
+      items = items.filter(
+        (session) => path.resolve(session.projectRoot) === normalizedRoot,
+      );
+    }
+
+    if (options?.limit !== undefined) {
+      assertNonNegativeInteger(options.limit, "limit");
+      items = items.slice(0, options.limit);
+    }
+
+    return items;
   }
 
   async resolveLatest(): Promise<CliSessionState | null> {
-    const sessions = await this.list();
+    const sessions = await this.list({ limit: 1 });
     return sessions[0] ?? null;
   }
 
   async resolveLatestForProjectRoot(projectRoot: string): Promise<CliSessionState | null> {
-    const normalizedRoot = path.resolve(projectRoot);
-    const sessions = await this.list();
-    return (
-      sessions.find((session) => path.resolve(session.projectRoot) === normalizedRoot) ??
-      null
-    );
+    const sessions = await this.list({ projectRoot, limit: 1 });
+    return sessions[0] ?? null;
   }
 
   async save(session: CliSessionState): Promise<void> {
@@ -118,6 +132,43 @@ export class SessionStore {
 
   getSessionPath(sessionId: string): string {
     return path.join(this.#sessionDir, `${sessionId}.json`);
+  }
+
+  async delete(sessionId: string): Promise<boolean> {
+    await this.ensure();
+
+    try {
+      await rm(this.getSessionPath(sessionId));
+      return true;
+    } catch (error) {
+      if (isNotFoundError(error)) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  async prune(options: {
+    keep: number;
+    projectRoot?: string;
+  }): Promise<{
+    kept: CliSessionState[];
+    deleted: CliSessionState[];
+  }> {
+    assertNonNegativeInteger(options.keep, "keep");
+
+    const sessions = await this.list({ projectRoot: options.projectRoot });
+    const kept = sessions.slice(0, options.keep);
+    const deleted = sessions.slice(options.keep);
+
+    const deletionResults = await Promise.all(
+      deleted.map((session) => this.delete(session.sessionId)),
+    );
+
+    return {
+      kept,
+      deleted: deleted.filter((_, index) => deletionResults[index]),
+    };
   }
 }
 
@@ -291,4 +342,33 @@ function isRecord(value: unknown): value is Record<string, any> {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function withCanonicalSessionId(
+  session: CliSessionState,
+  canonicalSessionId: string,
+): CliSessionState {
+  if (session.sessionId === canonicalSessionId) {
+    return session;
+  }
+
+  return {
+    ...session,
+    sessionId: canonicalSessionId,
+  };
+}
+
+function assertNonNegativeInteger(value: number, label: string): void {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative integer`);
+  }
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "ENOENT"
+  );
 }

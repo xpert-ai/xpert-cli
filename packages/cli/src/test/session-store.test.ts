@@ -95,6 +95,208 @@ describe("SessionStore", () => {
     expect(resolved?.projectRoot).toBe("/tmp/project-a");
   });
 
+  it("lists sessions by updatedAt desc, filters by project root, and skips broken files", async () => {
+    const store = new SessionStore(tempDir);
+    await store.ensure();
+    await writeFile(
+      store.getSessionPath("session-a"),
+      `${JSON.stringify(
+        createRawSession({
+          sessionId: "session-a",
+          projectRoot: "/tmp/project-a",
+          cwd: "/tmp/project-a",
+          updatedAt: "2026-03-25T00:00:02.000Z",
+        }),
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    await writeFile(
+      store.getSessionPath("session-b"),
+      `${JSON.stringify(
+        createRawSession({
+          sessionId: "session-b",
+          projectRoot: "/tmp/project-a",
+          cwd: "/tmp/project-a/packages/cli",
+          updatedAt: "2026-03-25T00:00:03.000Z",
+        }),
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    await writeFile(
+      store.getSessionPath("session-c"),
+      `${JSON.stringify(
+        createRawSession({
+          sessionId: "session-c",
+          projectRoot: "/tmp/project-b",
+          cwd: "/tmp/project-b",
+          updatedAt: "2026-03-25T00:00:01.000Z",
+        }),
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    await writeFile(store.getSessionPath("broken"), "{not-json}\n", "utf8");
+
+    const allSessions = await store.list();
+    const filteredSessions = await store.list({ projectRoot: "/tmp/project-a" });
+
+    expect(allSessions.map((session) => session.sessionId)).toEqual([
+      "session-b",
+      "session-a",
+      "session-c",
+    ]);
+    expect(filteredSessions.map((session) => session.sessionId)).toEqual([
+      "session-b",
+      "session-a",
+    ]);
+  });
+
+  it("deletes a selected session file", async () => {
+    const store = new SessionStore(tempDir);
+    const session = await store.create({
+      cwd: "/tmp/project",
+      projectRoot: "/tmp/project",
+      assistantId: "assistant-1",
+    });
+
+    await store.save(session);
+    expect(await store.load(session.sessionId)).not.toBeNull();
+
+    expect(await store.delete(session.sessionId)).toBe(true);
+    expect(await store.load(session.sessionId)).toBeNull();
+  });
+
+  it("uses the filename as the canonical local session id when payload ids are missing or mismatched", async () => {
+    const store = new SessionStore(tempDir);
+    await store.ensure();
+    await writeFile(
+      store.getSessionPath("missing-id"),
+      `${JSON.stringify(
+        {
+          ...createRawSession({
+            updatedAt: "2026-03-25T00:00:02.000Z",
+          }),
+          sessionId: undefined,
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+    await writeFile(
+      store.getSessionPath("mismatched-id"),
+      `${JSON.stringify(
+        createRawSession({
+          sessionId: "payload-id",
+          updatedAt: "2026-03-25T00:00:03.000Z",
+        }),
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    const firstPass = await store.list();
+    const secondPass = await store.list();
+
+    expect(firstPass.map((session) => session.sessionId)).toEqual([
+      "mismatched-id",
+      "missing-id",
+    ]);
+    expect(secondPass.map((session) => session.sessionId)).toEqual([
+      "mismatched-id",
+      "missing-id",
+    ]);
+    expect((await store.load("missing-id"))?.sessionId).toBe("missing-id");
+    expect((await store.load("mismatched-id"))?.sessionId).toBe("mismatched-id");
+    expect(await store.delete("missing-id")).toBe(true);
+    expect(await store.delete("mismatched-id")).toBe(true);
+  });
+
+  it("prunes older sessions and keeps the newest N within scope", async () => {
+    const store = new SessionStore(tempDir);
+    await store.ensure();
+    await Promise.all([
+      writeFile(
+        store.getSessionPath("keep-newest"),
+        `${JSON.stringify(
+          createRawSession({
+            sessionId: "keep-newest",
+            projectRoot: "/tmp/project-a",
+            cwd: "/tmp/project-a",
+            updatedAt: "2026-03-25T00:00:03.000Z",
+          }),
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      ),
+      writeFile(
+        store.getSessionPath("delete-old-1"),
+        `${JSON.stringify(
+          createRawSession({
+            sessionId: "delete-old-1",
+            projectRoot: "/tmp/project-a",
+            cwd: "/tmp/project-a",
+            updatedAt: "2026-03-25T00:00:02.000Z",
+          }),
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      ),
+      writeFile(
+        store.getSessionPath("delete-old-2"),
+        `${JSON.stringify(
+          createRawSession({
+            sessionId: "delete-old-2",
+            projectRoot: "/tmp/project-a",
+            cwd: "/tmp/project-a",
+            updatedAt: "2026-03-25T00:00:01.000Z",
+          }),
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      ),
+      writeFile(
+        store.getSessionPath("other-project"),
+        `${JSON.stringify(
+          createRawSession({
+            sessionId: "other-project",
+            projectRoot: "/tmp/project-b",
+            cwd: "/tmp/project-b",
+            updatedAt: "2026-03-25T00:00:04.000Z",
+          }),
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      ),
+    ]);
+
+    const result = await store.prune({
+      keep: 1,
+      projectRoot: "/tmp/project-a",
+    });
+    const remaining = await store.list();
+
+    expect(result.kept.map((session) => session.sessionId)).toEqual(["keep-newest"]);
+    expect(result.deleted.map((session) => session.sessionId)).toEqual([
+      "delete-old-1",
+      "delete-old-2",
+    ]);
+    expect(remaining.map((session) => session.sessionId)).toEqual([
+      "other-project",
+      "keep-newest",
+    ]);
+  });
+
   it("loads an older session file that does not have a remote fingerprint", async () => {
     const store = new SessionStore(tempDir);
     const sessionPath = store.getSessionPath("legacy-session");
@@ -170,3 +372,19 @@ describe("SessionStore", () => {
     expect(restored?.turns[0]?.renderItems).toEqual([]);
   });
 });
+
+function createRawSession(overrides: Record<string, unknown>) {
+  return {
+    sessionId: "session-1",
+    assistantId: "assistant-1",
+    cwd: "/tmp/project",
+    projectRoot: "/tmp/project",
+    approvals: [],
+    recentFiles: [],
+    recentToolCalls: [],
+    turns: [],
+    createdAt: "2026-03-25T00:00:00.000Z",
+    updatedAt: "2026-03-25T00:00:00.000Z",
+    ...overrides,
+  };
+}

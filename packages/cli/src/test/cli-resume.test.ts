@@ -8,6 +8,7 @@ const assertCliPreflightMock = vi.fn();
 const resolveCliExecutionModeMock = vi.fn();
 const runInteractiveAppMock = vi.fn();
 const sessionStoreLoadMock = vi.fn();
+const sessionStoreListMock = vi.fn();
 const sessionStoreResolveLatestMock = vi.fn();
 const sessionStoreCreateMock = vi.fn();
 const sessionStoreSaveMock = vi.fn();
@@ -48,6 +49,7 @@ vi.mock("../runtime/session-store.js", () => ({
     constructor() {}
 
     load = sessionStoreLoadMock;
+    list = sessionStoreListMock;
     resolveLatestForProjectRoot = sessionStoreResolveLatestMock;
     create = sessionStoreCreateMock;
     save = sessionStoreSaveMock;
@@ -65,6 +67,7 @@ describe("runCli resume", () => {
     resolveCliExecutionModeMock.mockReset();
     runInteractiveAppMock.mockReset();
     sessionStoreLoadMock.mockReset();
+    sessionStoreListMock.mockReset();
     sessionStoreResolveLatestMock.mockReset();
     sessionStoreCreateMock.mockReset();
     sessionStoreSaveMock.mockReset();
@@ -75,20 +78,23 @@ describe("runCli resume", () => {
     runCliPreflightMock.mockResolvedValue({ ok: true });
     resolveCliExecutionModeMock.mockReturnValue("interactive_ink");
     sessionStoreSaveMock.mockResolvedValue(undefined);
+    sessionStoreLoadMock.mockResolvedValue(null);
     sessionStoreResolveLatestMock.mockResolvedValue(null);
     sessionStoreCreateMock.mockResolvedValue(createSession());
     runInteractiveAppMock.mockResolvedValue(undefined);
   });
 
-  it("routes resume into the shared interactive startup path with persisted render items intact", async () => {
+  it("routes resume unique prefixes through project-scoped selector resolution with persisted render items intact", async () => {
     const resumedSession = createSession();
-    sessionStoreLoadMock.mockResolvedValue(resumedSession);
+    sessionStoreListMock.mockResolvedValue([resumedSession]);
 
     const { runCli } = await import("../cli.js");
 
-    await runCli(["resume", "session-1"]);
+    await runCli(["resume", "session-"]);
 
-    expect(sessionStoreLoadMock).toHaveBeenCalledWith("session-1");
+    expect(sessionStoreListMock).toHaveBeenCalledWith({
+      projectRoot: "/tmp/project",
+    });
     expect(runInteractiveAppMock).toHaveBeenCalledTimes(1);
     expect(runInteractiveAppMock.mock.calls[0]?.[0]).toMatchObject({
       session: {
@@ -107,6 +113,28 @@ describe("runCli resume", () => {
             ],
           },
         ],
+      },
+    });
+  });
+
+  it("resumes a full session id through direct load before project-scoped prefix matching", async () => {
+    const resumedSession = createSession({
+      sessionId: "session-2",
+      projectRoot: "/tmp/other-project",
+      cwd: "/tmp/other-project",
+    });
+    sessionStoreLoadMock.mockResolvedValue(resumedSession);
+
+    const { runCli } = await import("../cli.js");
+
+    await runCli(["resume", "session-2"]);
+
+    expect(sessionStoreLoadMock).toHaveBeenCalledWith("session-2");
+    expect(sessionStoreListMock).not.toHaveBeenCalled();
+    expect(runInteractiveAppMock).toHaveBeenCalledTimes(1);
+    expect(runInteractiveAppMock.mock.calls[0]?.[0]).toMatchObject({
+      session: {
+        sessionId: "session-2",
       },
     });
   });
@@ -131,7 +159,7 @@ function createConfig() {
   };
 }
 
-function createSession() {
+function createSession(overrides: Record<string, unknown> = {}) {
   const now = "2026-03-25T00:00:00.000Z";
   return {
     sessionId: "session-1",
@@ -165,5 +193,6 @@ function createSession() {
     ],
     createdAt: now,
     updatedAt: now,
+    ...overrides,
   };
 }

@@ -15,6 +15,10 @@ Local-first terminal coding agent MVP for the `xpert` platform.
 - `xpert doctor`
 - `xpert doctor --json`
 - `xpert resume [sessionId]`
+- `xpert sessions`
+- `xpert sessions list --json`
+- `xpert sessions delete <selector>`
+- `xpert sessions prune`
 - Interactive slash commands:
   - `/status`
   - `/tools`
@@ -36,6 +40,11 @@ Local-first terminal coding agent MVP for the `xpert` platform.
 - Local host execution by default, not server-side sandbox execution
 - Duplicate tool-call reuse and repeated-call guard inside one turn
 - `Ctrl+C` cancels the current turn and returns to `xpert>` in interactive mode
+- Local session management from `~/.xpert-cli/sessions`:
+  - list local sessions for the current project, or across all projects
+  - delete a local session by full id or unique id prefix
+  - prune older local sessions with an explicit `--yes` guard
+  - resume by full id or unique id prefix inside the current project
 - Interactive restart / `resume` now replays recent persisted turn history into inline scrollback:
   - replay comes from the local session file, not a server-side history fetch
   - persisted history is a clipped renderable transcript of recent user / assistant / tool / bash / diff / notice output
@@ -151,6 +160,21 @@ Resume latest session:
 node packages/cli/dist/index.js resume
 ```
 
+Resume a specific local session by full id or unique prefix:
+
+```bash
+node packages/cli/dist/index.js resume 28dfbacc
+```
+
+Manage local sessions without contacting the backend:
+
+```bash
+node packages/cli/dist/index.js sessions
+node packages/cli/dist/index.js sessions list --json
+node packages/cli/dist/index.js sessions delete 28dfbacc
+node packages/cli/dist/index.js sessions prune --keep 5 --yes
+```
+
 Health checks:
 
 ```bash
@@ -160,6 +184,8 @@ node packages/cli/dist/index.js auth status
 ```
 
 When a saved local session points at stale remote run state because `XPERT_API_URL`, `XPERT_ORGANIZATION_ID`, or `XPERT_AGENT_ID` changed, the CLI now keeps the local session history but clears the stale remote `threadId`, `runId`, and `checkpointId` before the next turn.
+
+`xpert sessions`, `xpert sessions list`, `xpert sessions delete`, and `xpert sessions prune` are local-only commands. They read and mutate files in `~/.xpert-cli/sessions` directly and do not require backend reachability or a valid `XPERT_AGENT_ID`.
 
 Cancel a stuck turn in interactive mode:
 

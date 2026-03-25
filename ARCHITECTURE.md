@@ -5,6 +5,7 @@
 1. `xpert-cli` resolves project root from `--cwd`, `git rev-parse --show-toplevel`, or the current shell cwd.
 2. It loads config from env, `~/.xpert-cli/config.json`, and `.xpert-cli.json`.
 3. It opens or creates a local session file in `~/.xpert-cli/sessions/<session-id>.json`.
+3.1. Local session-management commands (`xpert sessions ...`) and `resume <selector>` resolve session ids and unique id prefixes from those local files before any backend preflight.
 4. Before entering interactive, `-p`, or `resume`, it compares a saved remote fingerprint (`apiUrl`, `organizationId`, `assistantId`) against the current config.
 5. If that fingerprint changed, it keeps local transcripts / recent files / approvals but clears stale remote `threadId`, `runId`, and `checkpointId`, then shows a short local warning.
 6. It runs a light preflight before the first turn to catch missing assistant config, missing assistants, auth failures, and obvious backend issues early.
@@ -61,6 +62,10 @@
    - interactive TTY uses the inline Ink layout and host terminal scrollback
    - `-p` and non-TTY keep the existing text renderer and do not depend on Ink panels
 19. After each turn, it refreshes checkpoint state and persists session metadata locally.
+19.1. Local session-management commands stay entirely in `xpert-cli`:
+   - `sessions list` defaults to the current `projectRoot`, with `--all-projects` for cross-project inspection
+   - `sessions delete` deletes one local session file selected by full id or unique prefix
+   - `sessions prune` deletes older local session files only after an explicit `--yes`
 20. CLI request failures are normalized in the local SDK layer so both Ink and text mode show short diagnostics with target URL and next-step hints for service, auth, assistant-not-found, remote-thread-not-found, URL/protocol, stream, and resume failures.
 
 ## Local Backend
