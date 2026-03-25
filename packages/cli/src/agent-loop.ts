@@ -7,6 +7,7 @@ import {
   TurnTranscriptRecorder,
 } from "./runtime/turn-transcript.js";
 import {
+  createRenderTranscriptConsumer,
   createSessionRuntimeConsumer,
   createTurnEventDispatcher,
   createTurnTranscriptConsumer,
@@ -77,6 +78,11 @@ export async function runAgentTurn(options: {
   const emitTurnEvent = createTurnEventDispatcher([
     createSessionRuntimeConsumer(options.session),
     createWorkingSetConsumer(options.session),
+    createRenderTranscriptConsumer({
+      prompt: options.prompt,
+      recorder: transcript,
+      includeReasoning: isTruthy(process.env.XPERT_CLI_SHOW_REASONING),
+    }),
     createTurnTranscriptConsumer({
       session: options.session,
       recorder: transcript,
@@ -622,6 +628,10 @@ export async function runAgentTurn(options: {
     });
     throw error;
   }
+}
+
+function isTruthy(value: string | undefined): boolean {
+  return value === "1" || value === "true";
 }
 
 function toToolErrorResult(input: {

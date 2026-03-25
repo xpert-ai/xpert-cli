@@ -36,6 +36,10 @@ Local-first terminal coding agent MVP for the `xpert` platform.
 - Local host execution by default, not server-side sandbox execution
 - Duplicate tool-call reuse and repeated-call guard inside one turn
 - `Ctrl+C` cancels the current turn and returns to `xpert>` in interactive mode
+- Interactive restart / `resume` now replays recent persisted turn history into inline scrollback:
+  - replay comes from the local session file, not a server-side history fetch
+  - persisted history is a clipped renderable transcript of recent user / assistant / tool / bash / diff / notice output
+  - replay keeps bounded turn, text, bash, diff, and notice limits instead of storing an unlimited raw log
 - Automatic local context injection on every run and resume:
   - `XPERT.md` / `xpert.md` content
   - current `cwd`
@@ -119,6 +123,7 @@ pnpm --dir xpert-cli --filter @xpert-ai/xpert-cli dev
 When both `stdin` and `stdout` are real TTYs, interactive mode now starts an inline Ink app without entering the terminal alternate buffer:
 
 - committed history is appended above the live footer and remains in normal terminal scrollback
+- on restart or `resume`, the CLI replays the recent clipped turn transcript from the local session into committed history before new input
 - the current pending turn stays live near the bottom while streamed assistant/tool output is also appended into terminal scrollback during the turn
 - `/status`, `/tools`, and `/session` render as inline local history blocks
 - the permission prompt stays inline

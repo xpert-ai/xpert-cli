@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createRenderTranscriptConsumer,
   createTurnTranscriptConsumer,
   createWorkingSetConsumer,
 } from "../runtime/turn-event-consumers.js";
@@ -12,13 +13,38 @@ describe("turn event consumers", () => {
     const recorder = new TurnTranscriptRecorder({
       prompt: "Patch src/app.ts",
     });
+    const renderConsumer = createRenderTranscriptConsumer({
+      prompt: "Patch src/app.ts",
+      recorder,
+      includeReasoning: true,
+    });
     const consume = createTurnTranscriptConsumer({ session, recorder });
 
+    renderConsumer({
+      type: "assistant_text_delta",
+      text: "Checking the file.",
+      sequence: 1,
+      at: "2026-03-23T00:00:01.000Z",
+    });
     consume({
       type: "assistant_text_delta",
       text: "Checking the file.",
       sequence: 1,
       at: "2026-03-23T00:00:01.000Z",
+    });
+    renderConsumer({
+      type: "permission_resolved",
+      callId: "call-1",
+      toolName: "Patch",
+      riskLevel: "moderate",
+      scope: "Patch src/app.ts",
+      allowed: true,
+      decision: "allow_session",
+      remembered: true,
+      target: "src/app.ts",
+      reason: "modify src/app.ts",
+      sequence: 2,
+      at: "2026-03-23T00:00:02.000Z",
     });
     consume({
       type: "permission_resolved",
@@ -34,6 +60,17 @@ describe("turn event consumers", () => {
       sequence: 2,
       at: "2026-03-23T00:00:02.000Z",
     });
+    renderConsumer({
+      type: "tool_completed",
+      callId: "call-1",
+      toolName: "Patch",
+      argsSummary: "path=src/app.ts",
+      summary: "src/app.ts +1 -1",
+      status: "success",
+      changedFiles: ["src/app.ts"],
+      sequence: 3,
+      at: "2026-03-23T00:00:03.000Z",
+    });
     consume({
       type: "tool_completed",
       callId: "call-1",
@@ -44,6 +81,15 @@ describe("turn event consumers", () => {
       changedFiles: ["src/app.ts"],
       sequence: 3,
       at: "2026-03-23T00:00:03.000Z",
+    });
+    renderConsumer({
+      type: "turn_finished",
+      status: "completed",
+      threadId: "thread-1",
+      runId: "run-1",
+      checkpointId: "checkpoint-1",
+      sequence: 4,
+      at: "2026-03-23T00:00:04.000Z",
     });
     consume({
       type: "turn_finished",
@@ -76,6 +122,23 @@ describe("turn event consumers", () => {
       remembered: true,
       target: "src/app.ts",
     });
+    expect(session.turns[0]?.renderItems).toEqual([
+      {
+        type: "user_prompt",
+        text: "Patch src/app.ts",
+      },
+      {
+        type: "assistant_text",
+        text: "Checking the file.",
+      },
+      {
+        type: "tool_result",
+        callId: "call-1",
+        toolName: "Patch",
+        summary: "src/app.ts +1 -1",
+        status: "success",
+      },
+    ]);
   });
 
   it("records cancellation and error details from terminal events", () => {
@@ -83,8 +146,20 @@ describe("turn event consumers", () => {
     const recorder = new TurnTranscriptRecorder({
       prompt: "Run tests",
     });
+    const renderConsumer = createRenderTranscriptConsumer({
+      prompt: "Run tests",
+      recorder,
+    });
     const consume = createTurnTranscriptConsumer({ session, recorder });
 
+    renderConsumer({
+      type: "turn_finished",
+      status: "cancelled",
+      error: "Turn cancelled",
+      cancelled: true,
+      sequence: 1,
+      at: "2026-03-23T00:00:01.000Z",
+    });
     consume({
       type: "turn_finished",
       status: "cancelled",
@@ -99,6 +174,101 @@ describe("turn event consumers", () => {
       error: "Turn cancelled",
       cancelled: true,
     });
+    expect(session.turns[0]?.renderItems).toEqual([
+      {
+        type: "user_prompt",
+        text: "Run tests",
+      },
+      {
+        type: "warning",
+        text: "Turn cancelled",
+      },
+    ]);
+  });
+
+  it("records renderable transcript items in event order and flushes trailing text", () => {
+    const recorder = new TurnTranscriptRecorder({
+      prompt: "Inspect src/index.ts",
+    });
+    const consume = createRenderTranscriptConsumer({
+      prompt: "Inspect src/index.ts",
+      recorder,
+      includeReasoning: true,
+    });
+
+    consume({
+      type: "assistant_text_delta",
+      text: "Reading the file.",
+      sequence: 1,
+      at: "2026-03-23T00:00:01.000Z",
+    });
+    consume({
+      type: "reasoning",
+      text: "Checking exports.",
+      sequence: 2,
+      at: "2026-03-23T00:00:02.000Z",
+    });
+    consume({
+      type: "tool_requested",
+      callId: "call-1",
+      toolName: "Read",
+      argsSummary: "path=src/index.ts",
+      target: "src/index.ts",
+      sequence: 3,
+      at: "2026-03-23T00:00:03.000Z",
+    });
+    consume({
+      type: "tool_output_line",
+      callId: "call-1",
+      toolName: "Read",
+      line: "1 | export const value = 1;",
+      sequence: 4,
+      at: "2026-03-23T00:00:04.000Z",
+    });
+    consume({
+      type: "turn_finished",
+      status: "failed",
+      error: "network request failed",
+      sequence: 5,
+      at: "2026-03-23T00:00:05.000Z",
+    });
+
+    const turn = recorder.finish({
+      status: "error",
+      error: "network request failed",
+    });
+
+    expect(turn.renderItems).toEqual([
+      {
+        type: "user_prompt",
+        text: "Inspect src/index.ts",
+      },
+      {
+        type: "assistant_text",
+        text: "Reading the file.",
+      },
+      {
+        type: "reasoning",
+        text: "Checking exports.",
+      },
+      {
+        type: "tool_call",
+        callId: "call-1",
+        toolName: "Read",
+        target: "src/index.ts",
+        argsSummary: "path=src/index.ts",
+      },
+      {
+        type: "bash_line",
+        callId: "call-1",
+        toolName: "Read",
+        text: "1 | export const value = 1;",
+      },
+      {
+        type: "error",
+        text: "network request failed",
+      },
+    ]);
   });
 
   it("updates recent tool calls and files from tool completion events", () => {

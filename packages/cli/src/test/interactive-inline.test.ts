@@ -1,93 +1,253 @@
 import type { ResolvedXpertCliConfig } from "@xpert-cli/contracts";
 import { describe, expect, it, vi } from "vitest";
 import {
-  createInteractiveStreamBuffers,
-  flushInteractiveStreamBuffers,
+  buildInitialInteractiveHistory,
   runInteractiveSlashCommand,
-  splitFlushableStreamText,
-  streamInteractiveTurnEvent,
 } from "../interactive.js";
 import type { CliSessionState } from "../runtime/session-store.js";
 import type { ToolRegistry } from "../tools/contracts.js";
 
 describe("interactive inline flow", () => {
-  it("streams long assistant text into committed history before turn completion", () => {
-    const update = streamInteractiveTurnEvent(createInteractiveStreamBuffers(), {
-      type: "assistant_text_delta",
-      text: "a".repeat(700),
-      sequence: 1,
-      at: "2026-03-25T00:00:01.000Z",
+  it("replays persisted render transcript into initial committed history", () => {
+    const session = createSession({
+      turns: [
+        {
+          turnId: "turn-1",
+          prompt: "Read README.md",
+          startedAt: "2026-03-25T00:00:01.000Z",
+          finishedAt: "2026-03-25T00:00:03.000Z",
+          status: "completed",
+          toolEvents: [],
+          permissionEvents: [],
+          changedFiles: [],
+          renderItems: [
+            {
+              type: "user_prompt",
+              text: "Read README.md",
+            },
+            {
+              type: "assistant_text",
+              text: "Opening README.md",
+            },
+            {
+              type: "tool_call",
+              callId: "call-1",
+              toolName: "Read",
+              target: "README.md",
+              argsSummary: "path=README.md",
+            },
+            {
+              type: "tool_result",
+              callId: "call-1",
+              toolName: "Read",
+              summary: "read README.md",
+              status: "success",
+            },
+          ],
+        },
+      ],
     });
 
-    expect(update.items).toEqual([
+    const initial = buildInitialInteractiveHistory(session);
+
+    expect(initial.batches).toHaveLength(2);
+    expect(initial.batches[0]?.blocks[0]).toMatchObject({
+      kind: "info",
+      text: `xpert session ${session.sessionId}`,
+    });
+    expect(initial.batches[1]?.blocks).toEqual([
       {
-        type: "assistant_text",
-        text: "a".repeat(500),
+        id: "history-4",
+        kind: "user_message",
+        text: "Read README.md",
       },
-    ]);
-    expect(update.buffers.assistant).toBe("a".repeat(200));
-  });
-
-  it("flushes buffered assistant text before tool events so scrollback keeps chronological order", () => {
-    const buffered = streamInteractiveTurnEvent(createInteractiveStreamBuffers(), {
-      type: "assistant_text_delta",
-      text: "Planning the change.",
-      sequence: 1,
-      at: "2026-03-25T00:00:01.000Z",
-    });
-    const tool = streamInteractiveTurnEvent(buffered.buffers, {
-      type: "tool_requested",
-      callId: "call-1",
-      toolName: "Read",
-      argsSummary: "path=README.md",
-      target: "README.md",
-      sequence: 2,
-      at: "2026-03-25T00:00:02.000Z",
-    });
-
-    expect(tool.items).toEqual([
       {
-        type: "assistant_text",
-        text: "Planning the change.",
+        id: "history-5",
+        kind: "assistant_message",
+        text: "Opening README.md",
       },
       {
-        type: "tool_call",
-        callId: "call-1",
+        id: "call:call-1",
+        kind: "tool_group",
         toolName: "Read",
         target: "README.md",
-        argsSummary: "path=README.md",
+        detail: "path=README.md",
+        status: "success",
+        summary: "read README.md",
+        activity: undefined,
       },
+    ]);
+    expect(initial.nextHistoryIndex).toBe(8);
+  });
+
+  it("hides replayed reasoning by default and only includes it when enabled", () => {
+    const session = createSession({
+      turns: [
+        {
+          turnId: "turn-1",
+          prompt: "Explain the change",
+          startedAt: "2026-03-25T00:00:01.000Z",
+          finishedAt: "2026-03-25T00:00:03.000Z",
+          status: "completed",
+          toolEvents: [],
+          permissionEvents: [],
+          changedFiles: [],
+          renderItems: [
+            {
+              type: "user_prompt",
+              text: "Explain the change",
+            },
+            {
+              type: "reasoning",
+              text: "private reasoning",
+            },
+            {
+              type: "assistant_text",
+              text: "public answer",
+            },
+          ],
+        },
+      ],
+    });
+
+    const hidden = buildInitialInteractiveHistory(session, {
+      includeReasoning: false,
+    });
+    const shown = buildInitialInteractiveHistory(session, {
+      includeReasoning: true,
+    });
+
+    expect(hidden.batches[1]?.blocks.map((block) => block.kind)).toEqual([
+      "user_message",
+      "assistant_message",
+    ]);
+    expect(shown.batches[1]?.blocks.map((block) => block.kind)).toEqual([
+      "user_message",
+      "thinking",
+      "assistant_message",
     ]);
   });
 
-  it("flushes trailing buffered text when the turn is finalized", () => {
-    const buffered = streamInteractiveTurnEvent(createInteractiveStreamBuffers(), {
-      type: "assistant_text_delta",
-      text: "Final partial answer",
-      sequence: 1,
-      at: "2026-03-25T00:00:01.000Z",
-    });
-    const flushed = flushInteractiveStreamBuffers(buffered.buffers);
+  it("skips legacy turns without render items and uses the same replay helper for resumed sessions", () => {
+    const initial = buildInitialInteractiveHistory(
+      createSession({
+        turns: [
+          {
+            turnId: "legacy-turn",
+            prompt: "Legacy prompt",
+            startedAt: "2026-03-25T00:00:01.000Z",
+            finishedAt: "2026-03-25T00:00:02.000Z",
+            status: "completed",
+            assistantText: "summary only",
+            toolEvents: [],
+            permissionEvents: [],
+            changedFiles: [],
+          },
+          {
+            turnId: "resumed-turn",
+            prompt: "Run tests",
+            startedAt: "2026-03-25T00:00:03.000Z",
+            finishedAt: "2026-03-25T00:00:04.000Z",
+            status: "completed",
+            toolEvents: [],
+            permissionEvents: [],
+            changedFiles: [],
+            renderItems: [
+              {
+                type: "user_prompt",
+                text: "Run tests",
+              },
+              {
+                type: "warning",
+                text: "Turn cancelled",
+              },
+            ],
+          },
+        ],
+      }),
+    );
 
-    expect(flushed.items).toEqual([
+    expect(initial.batches).toHaveLength(2);
+    expect(initial.batches[1]?.blocks).toEqual([
       {
-        type: "assistant_text",
-        text: "Final partial answer",
+        id: "history-4",
+        kind: "user_message",
+        text: "Run tests",
+      },
+      {
+        id: "history-5",
+        kind: "notice",
+        level: "warning",
+        scope: "session",
+        title: "Session Warning",
+        messages: ["Turn cancelled"],
       },
     ]);
-    expect(flushed.buffers).toEqual(createInteractiveStreamBuffers());
   });
 
-  it("does not split assistant output on ordinary newlines before the size threshold", () => {
-    const update = streamInteractiveTurnEvent(createInteractiveStreamBuffers(), {
-      type: "assistant_text_delta",
-      text: "line 1\n\nline 2\n\nline 3",
-      sequence: 1,
-      at: "2026-03-25T00:00:01.000Z",
-    });
+  it("normalizes unresolved replayed tool activity to idle instead of showing it as running", () => {
+    const initial = buildInitialInteractiveHistory(
+      createSession({
+        turns: [
+          {
+            turnId: "turn-1",
+            prompt: "Run tests",
+            startedAt: "2026-03-25T00:00:03.000Z",
+            finishedAt: "2026-03-25T00:00:04.000Z",
+            status: "completed",
+            toolEvents: [],
+            permissionEvents: [],
+            changedFiles: [],
+            renderItems: [
+              {
+                type: "user_prompt",
+                text: "Run tests",
+              },
+              {
+                type: "tool_call",
+                callId: "call-1",
+                toolName: "Bash",
+                target: "pnpm test",
+                argsSummary: "command=pnpm test",
+              },
+              {
+                type: "bash_line",
+                callId: "call-1",
+                toolName: "Bash",
+                text: "failing test output",
+              },
+            ],
+          },
+        ],
+      }),
+    );
 
-    expect(update.items).toEqual([]);
-    expect(update.buffers.assistant).toBe("line 1\n\nline 2\n\nline 3");
+    expect(initial.batches[1]?.blocks).toEqual([
+      {
+        id: "history-4",
+        kind: "user_message",
+        text: "Run tests",
+      },
+      {
+        id: "call:call-1",
+        kind: "tool_group",
+        toolName: "Bash",
+        target: "pnpm test",
+        detail: "command=pnpm test",
+        status: "idle",
+        summary: undefined,
+        activity: "1 bash line",
+      },
+      {
+        id: "call:call-1:bash",
+        kind: "bash_output",
+        title: "Bash · pnpm test",
+        status: "idle",
+        summary: undefined,
+        lines: ["failing test output"],
+        hiddenLineCount: 0,
+      },
+    ]);
   });
 
   it("forces interactive slash commands down the inline history path", async () => {
@@ -119,13 +279,6 @@ describe("interactive inline flow", () => {
     expect(effect.historyItems[0]).toMatchObject({
       type: "status_view",
       title: "Status",
-    });
-  });
-
-  it("splits very long stream text near the soft limit", () => {
-    expect(splitFlushableStreamText("a".repeat(700))).toEqual({
-      flushText: "a".repeat(500),
-      remainder: "a".repeat(200),
     });
   });
 });

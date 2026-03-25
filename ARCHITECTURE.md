@@ -32,12 +32,17 @@
    - resumes the same execution with `command.resume.toolMessages`.
 14. Interactive Ink mode now renders an inline layout with:
    - append-only committed history rendered through Ink `Static`
+   - startup / resume replay of the recent clipped local turn transcript into committed history
    - a live pending-turn tail rendered below committed history while streamed assistant/tool output is appended into host scrollback during the turn
    - inline local slash-command output for `/status`, `/tools`, and `/session`
    - an inline busy status row, permission prompt, and composer
 14.1. Because interactive TTY no longer enters the terminal alternate buffer:
    - committed history lands in normal host terminal scrollback
    - terminal mouse-wheel scrolling and the terminal scrollbar become the main history navigation surface again
+14.2. The replay source is local session persistence, not a server-side history fetch:
+   - each saved turn keeps the existing summary transcript plus a clipped renderable transcript for recent user / assistant / tool / bash / diff / notice items
+   - render transcripts are bounded by recent-turn count, per-turn item count, text size, bash lines, diff size, and notice count
+   - older sessions that only have summary transcripts still load; they just skip replay for turns without render items
 15. `interactive.tsx` still owns local UI state:
    - composer input and input-history browsing
    - permission prompt display state

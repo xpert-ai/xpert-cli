@@ -38,6 +38,16 @@ describe("SessionStore", () => {
       toolEvents: [],
       permissionEvents: [],
       changedFiles: [],
+      renderItems: [
+        {
+          type: "user_prompt",
+          text: "Read README.md",
+        },
+        {
+          type: "assistant_text",
+          text: "done",
+        },
+      ],
     });
 
     await store.save(session);
@@ -51,6 +61,16 @@ describe("SessionStore", () => {
     });
     expect(restored?.turns).toHaveLength(1);
     expect(restored?.turns[0]?.prompt).toBe("Read README.md");
+    expect(restored?.turns[0]?.renderItems).toEqual([
+      {
+        type: "user_prompt",
+        text: "Read README.md",
+      },
+      {
+        type: "assistant_text",
+        text: "done",
+      },
+    ]);
   });
 
   it("resolves the latest session for the current project root", async () => {
@@ -109,5 +129,44 @@ describe("SessionStore", () => {
       checkpointId: "checkpoint-legacy",
       remoteFingerprint: undefined,
     });
+    expect(restored?.turns).toEqual([]);
+  });
+
+  it("loads legacy turns that do not yet contain render items", async () => {
+    const store = new SessionStore(tempDir);
+    const sessionPath = store.getSessionPath("legacy-render-session");
+    await store.ensure();
+    await writeFile(
+      sessionPath,
+      `${JSON.stringify({
+        sessionId: "legacy-render-session",
+        assistantId: "assistant-legacy",
+        cwd: "/tmp/project",
+        projectRoot: "/tmp/project",
+        approvals: [],
+        recentFiles: [],
+        recentToolCalls: [],
+        turns: [
+          {
+            turnId: "turn-1",
+            prompt: "Read README.md",
+            startedAt: "2026-03-21T00:00:00.000Z",
+            finishedAt: "2026-03-21T00:00:01.000Z",
+            status: "completed",
+            assistantText: "done",
+            toolEvents: [],
+            permissionEvents: [],
+            changedFiles: [],
+          },
+        ],
+        createdAt: "2026-03-21T00:00:00.000Z",
+        updatedAt: "2026-03-21T00:00:01.000Z",
+      }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const restored = await store.load("legacy-render-session");
+
+    expect(restored?.turns[0]?.renderItems).toEqual([]);
   });
 });

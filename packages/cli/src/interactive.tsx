@@ -3,12 +3,16 @@ import { Box, render, Static, useApp, useInput, useStdout } from "ink";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ResolvedXpertCliConfig } from "@xpert-cli/contracts";
 import { runAgentTurn } from "./agent-loop.js";
+import {
+  filterPersistedTurnRenderItemsForReplay,
+  hydrateTurnRenderItems,
+  RENDER_TRANSCRIPT_LIMITS,
+} from "./runtime/render-transcript.js";
 import { runInterruptibleTurn, TurnCancelledError } from "./runtime/turn-control.js";
 import { formatCliErrorBody } from "./sdk/request-errors.js";
 import {
   getNextTurnLifecycleState,
   type TurnEvent,
-  type TurnEventInput,
   type TurnLifecycleState,
 } from "./runtime/turn-events.js";
 import type { CliSessionState, SessionStore } from "./runtime/session-store.js";
@@ -20,8 +24,12 @@ import {
   type UiHistoryItem,
   type UiHistoryItemInput,
 } from "./ui/history.js";
+import {
+  createInteractiveStreamBuffers,
+  flushInteractiveStreamBuffers,
+  streamInteractiveTurnEvent,
+} from "./ui/interactive-stream-history.js";
 import { applyTurnEvent } from "./ui/ink-state.js";
-import type { UiEvent } from "./ui/events.js";
 import { InkUiSink } from "./ui/ink-sink.js";
 import { InlinePermissionController } from "./ui/inline-permission.js";
 import { resolveCtrlCAction } from "./ui/ctrl-c.js";
@@ -43,23 +51,11 @@ import {
 
 const DOUBLE_CTRL_C_WINDOW_MS = 1200;
 const MAX_PERMISSION_HEIGHT = 8;
-const STREAM_TEXT_SOFT_LIMIT = 600;
-const STREAM_TEXT_TRAILING_CHARS = 200;
 
 type InteractiveNotice = {
   level: "info" | "warning" | "error";
   message: string;
 };
-
-export interface InteractiveStreamBuffers {
-  assistant: string;
-  reasoning: string;
-}
-
-export interface InteractiveStreamUpdate {
-  items: UiHistoryItemInput[];
-  buffers: InteractiveStreamBuffers;
-}
 
 export async function runInteractiveApp(options: {
   config: ResolvedXpertCliConfig;
@@ -84,11 +80,18 @@ function InteractiveApp(props: {
   session: CliSessionState;
   sessionStore: SessionStore;
 }) {
+  const initialHistory = useMemo(
+    () =>
+      buildInitialInteractiveHistory(props.session, {
+        includeReasoning: isTruthy(process.env.XPERT_CLI_SHOW_REASONING),
+      }),
+    [props.session],
+  );
   const { exit } = useApp();
   const { stdout } = useStdout();
   const toolRegistry = useMemo(() => createToolRegistry(), []);
   const permissionController = useMemo(() => new InlinePermissionController(), []);
-  const historyIdRef = useRef(4);
+  const historyIdRef = useRef(initialHistory.nextHistoryIndex);
   const cancelActiveTurnRef = useRef<(() => void) | null>(null);
   const sessionRef = useRef(props.session);
   const lastCtrlCAtRef = useRef<number | null>(null);
@@ -97,28 +100,9 @@ function InteractiveApp(props: {
   const streamBuffersRef = useRef(createInteractiveStreamBuffers());
   const [terminalSize, setTerminalSize] = useState(() => getTerminalSize(stdout));
   const [session, setSession] = useState(props.session);
-  const [committedHistory, setCommittedHistory] = useState<CommittedRenderBatch[]>(() => {
-    const initialItems: UiHistoryItem[] = [
-      createHistoryItem("history-0", {
-        type: "info",
-        text: `xpert session ${props.session.sessionId}`,
-      }),
-      createHistoryItem("history-1", {
-        type: "info",
-        text: `cwd: ${props.session.cwd}`,
-      }),
-      createHistoryItem("history-2", {
-        type: "info",
-        text: "Interactive mode is inline. Use your terminal scrollback to review history.",
-      }),
-      createHistoryItem("history-3", {
-        type: "info",
-        text: "Commands: /status /tools /session /exit",
-      }),
-    ];
-    const batch = createCommittedRenderBatch(initialItems);
-    return batch ? [batch] : [];
-  });
+  const [committedHistory, setCommittedHistory] = useState<CommittedRenderBatch[]>(
+    initialHistory.batches,
+  );
   const [pending, setPending] = useState<PendingTurnState>(createEmptyPendingTurn());
   const [input, setInput] = useState("");
   const [turnLifecycleState, setTurnLifecycleState] = useState<TurnLifecycleState | "idle">(
@@ -474,6 +458,107 @@ function createHistoryItem(id: string, item: UiHistoryItemInput): UiHistoryItem 
   };
 }
 
+export function buildInitialInteractiveHistory(
+  session: CliSessionState,
+  options?: {
+    maxReplayTurns?: number;
+    includeReasoning?: boolean;
+  },
+): {
+  batches: CommittedRenderBatch[];
+  nextHistoryIndex: number;
+} {
+  const maxReplayTurns = options?.maxReplayTurns ?? RENDER_TRANSCRIPT_LIMITS.maxReplayTurns;
+  const replayTurns =
+    maxReplayTurns > 0 ? session.turns.slice(-maxReplayTurns) : [];
+  const batches: CommittedRenderBatch[] = [];
+  let historyIndex = 0;
+  const nextId = () => `history-${historyIndex++}`;
+
+  const bannerBatch = createCommittedRenderBatch(
+    buildInteractiveBannerItems(session).map((item) =>
+      createHistoryItem(nextId(), item),
+    ),
+  );
+  if (bannerBatch) {
+    batches.push(bannerBatch);
+  }
+
+  for (const turn of replayTurns) {
+    const batch = createReplayCommittedRenderBatch(
+      hydrateTurnRenderItems(
+        filterPersistedTurnRenderItemsForReplay(turn.renderItems, {
+          includeReasoning: options?.includeReasoning,
+        }),
+        nextId,
+      ),
+    );
+    if (batch) {
+      batches.push(batch);
+    }
+  }
+
+  return {
+    batches,
+    nextHistoryIndex: historyIndex,
+  };
+}
+
+function buildInteractiveBannerItems(session: CliSessionState): UiHistoryItemInput[] {
+  return [
+    {
+      type: "info",
+      text: `xpert session ${session.sessionId}`,
+    },
+    {
+      type: "info",
+      text: `cwd: ${session.cwd}`,
+    },
+    {
+      type: "info",
+      text: "Interactive mode is inline. Use your terminal scrollback to review history.",
+    },
+    {
+      type: "info",
+      text: "Commands: /status /tools /session /exit",
+    },
+  ];
+}
+
+function createReplayCommittedRenderBatch(
+  history: UiHistoryItem[],
+): CommittedRenderBatch | null {
+  const batch = createCommittedRenderBatch(history);
+  if (!batch) {
+    return null;
+  }
+
+  return {
+    ...batch,
+    blocks: batch.blocks.map((block) => {
+      if (block.kind === "tool_group" && block.status === "running") {
+        return {
+          ...block,
+          status: "idle",
+        };
+      }
+      if (block.kind === "bash_output" && block.status === "running") {
+        return {
+          ...block,
+          status: "idle",
+        };
+      }
+      if (block.kind === "diff_preview" && block.status === "running") {
+        return {
+          ...block,
+          status: "idle",
+        };
+      }
+      return block;
+    }),
+  };
+}
+
 function toInteractiveTurnState(input: {
   lifecycleState: TurnLifecycleState | "idle";
   permissionActive: boolean;
@@ -542,219 +627,6 @@ export async function runInteractiveSlashCommand(
   };
 }
 
-export function createInteractiveStreamBuffers(): InteractiveStreamBuffers {
-  return {
-    assistant: "",
-    reasoning: "",
-  };
-}
-
-export function streamInteractiveTurnEvent(
-  current: InteractiveStreamBuffers,
-  event: UiEvent | TurnEventInput,
-): InteractiveStreamUpdate {
-  switch (event.type) {
-    case "assistant_text":
-    case "assistant_text_delta":
-      return appendStreamText(current, "assistant", event.text);
-    case "reasoning":
-      return appendStreamText(current, "reasoning", event.text);
-    case "tool_requested":
-    case "tool_call": {
-      const flushed = flushInteractiveStreamBuffers(current);
-      return {
-        buffers: flushed.buffers,
-        items: [
-          ...flushed.items,
-          {
-            type: "tool_call",
-            callId: "callId" in event ? event.callId : undefined,
-            toolName: event.toolName,
-            target: event.target,
-            argsSummary: "argsSummary" in event ? event.argsSummary : undefined,
-          },
-        ],
-      };
-    }
-    case "tool_output_line":
-    case "bash_line": {
-      const flushed = flushInteractiveStreamBuffers(current);
-      return {
-        buffers: flushed.buffers,
-        items: [
-          ...flushed.items,
-          {
-            type: "bash_line",
-            callId: "callId" in event ? event.callId : undefined,
-            toolName: "toolName" in event ? event.toolName : undefined,
-            text: event.line,
-          },
-        ],
-      };
-    }
-    case "tool_diff":
-    case "diff": {
-      const flushed = flushInteractiveStreamBuffers(current);
-      return {
-        buffers: flushed.buffers,
-        items: [
-          ...flushed.items,
-          {
-            type: "diff",
-            callId: "callId" in event ? event.callId : undefined,
-            toolName: "toolName" in event ? event.toolName : undefined,
-            path: "path" in event ? event.path : undefined,
-            text: event.diffText,
-          },
-        ],
-      };
-    }
-    case "tool_completed":
-    case "tool_ack": {
-      const flushed = flushInteractiveStreamBuffers(current);
-      return {
-        buffers: flushed.buffers,
-        items: [
-          ...flushed.items,
-          {
-            type: "tool_result",
-            callId: "callId" in event ? event.callId : undefined,
-            toolName: event.toolName,
-            summary: event.summary,
-            status: "status" in event ? event.status : "success",
-          },
-        ],
-      };
-    }
-    case "warning": {
-      if ("code" in event && event.code === "STALE_THREAD_RETRY") {
-        return {
-          items: [],
-          buffers: current,
-        };
-      }
-      const flushed = flushInteractiveStreamBuffers(current);
-      return {
-        buffers: flushed.buffers,
-        items: [
-          ...flushed.items,
-          {
-            type: "warning",
-            callId: "callId" in event ? event.callId : undefined,
-            toolName: "toolName" in event ? event.toolName : undefined,
-            code: "code" in event ? event.code : undefined,
-            text: event.message,
-          },
-        ],
-      };
-    }
-    case "error": {
-      const flushed = flushInteractiveStreamBuffers(current);
-      return {
-        buffers: flushed.buffers,
-        items: [
-          ...flushed.items,
-          {
-            type: "error",
-            callId: "callId" in event ? event.callId : undefined,
-            toolName: "toolName" in event ? event.toolName : undefined,
-            code: "code" in event ? event.code : undefined,
-            text: event.message,
-          },
-        ],
-      };
-    }
-    default:
-      return {
-        items: [],
-        buffers: current,
-      };
-  }
-}
-
-export function flushInteractiveStreamBuffers(
-  current: InteractiveStreamBuffers,
-): InteractiveStreamUpdate {
-  const items: UiHistoryItemInput[] = [];
-
-  if (current.assistant.length > 0) {
-    items.push({
-      type: "assistant_text",
-      text: current.assistant,
-    });
-  }
-  if (current.reasoning.length > 0) {
-    items.push({
-      type: "reasoning",
-      text: current.reasoning,
-    });
-  }
-
-  return {
-    items,
-    buffers: createInteractiveStreamBuffers(),
-  };
-}
-
-function appendStreamText(
-  current: InteractiveStreamBuffers,
-  key: "assistant" | "reasoning",
-  text: string,
-): InteractiveStreamUpdate {
-  const otherKey = key === "assistant" ? "reasoning" : "assistant";
-  const flushedOther =
-    current[otherKey].length > 0
-      ? flushInteractiveStreamBuffers(current)
-      : {
-          items: [],
-          buffers: current,
-        };
-  const nextBuffers: InteractiveStreamBuffers = {
-    ...flushedOther.buffers,
-    [key]: flushedOther.buffers[key] + text,
-  };
-  const split = splitFlushableStreamText(nextBuffers[key]);
-
-  if (!split.flushText) {
-    return {
-      items: flushedOther.items,
-      buffers: nextBuffers,
-    };
-  }
-
-  return {
-    items: [
-      ...flushedOther.items,
-      {
-        type: key === "assistant" ? "assistant_text" : "reasoning",
-        text: split.flushText,
-      },
-    ],
-    buffers: {
-      ...nextBuffers,
-      [key]: split.remainder,
-    },
-  };
-}
-
-export function splitFlushableStreamText(input: string): {
-  flushText: string;
-  remainder: string;
-} {
-  if (input.length <= STREAM_TEXT_SOFT_LIMIT) {
-    return {
-      flushText: "",
-      remainder: input,
-    };
-  }
-
-  const splitAt = Math.max(
-    STREAM_TEXT_SOFT_LIMIT - STREAM_TEXT_TRAILING_CHARS,
-    input.length - STREAM_TEXT_TRAILING_CHARS,
-  );
-
-  return {
-    flushText: input.slice(0, splitAt),
-    remainder: input.slice(splitAt),
-  };
+function isTruthy(value: string | undefined): boolean {
+  return value === "1" || value === "true";
 }

@@ -4,10 +4,16 @@ import {
   pushTurnTranscript,
   TurnTranscriptRecorder,
 } from "./turn-transcript.js";
+import type { PersistedTurnRenderItem } from "./render-transcript.js";
 import { pushRecentFile, pushToolSummary } from "./working-set.js";
 import type { TurnEvent, TurnEventInput } from "./turn-events.js";
 import { createTurnEventBuilder } from "./turn-events.js";
 import type { UiSink } from "../ui/sink.js";
+import {
+  createInteractiveStreamBuffers,
+  flushInteractiveStreamBuffers,
+  streamInteractiveTurnEvent,
+} from "../ui/interactive-stream-history.js";
 
 export type TurnEventConsumer = (event: TurnEvent) => void;
 
@@ -125,5 +131,56 @@ export function createTurnTranscriptConsumer(options: {
     }
 
     options.recorder.consume(event);
+  };
+}
+
+export function createRenderTranscriptConsumer(options: {
+  prompt: string;
+  recorder: TurnTranscriptRecorder;
+  includeReasoning?: boolean;
+}): TurnEventConsumer {
+  let finalized = false;
+  let buffers = createInteractiveStreamBuffers();
+  const items: PersistedTurnRenderItem[] = [
+    {
+      type: "user_prompt",
+      text: options.prompt,
+    },
+  ];
+
+  return (event) => {
+    if (finalized) {
+      return;
+    }
+
+    if (event.type === "turn_finished") {
+      const flushed = flushInteractiveStreamBuffers(buffers);
+      buffers = flushed.buffers;
+      items.push(...flushed.items);
+
+      if (event.status === "failed") {
+        items.push({
+          type: "error",
+          text: event.error ?? "turn failed",
+        });
+      } else if (event.status === "cancelled") {
+        items.push({
+          type: "warning",
+          text: event.error ?? "Turn cancelled",
+        });
+      }
+
+      options.recorder.setRenderItems(items);
+      finalized = true;
+      return;
+    }
+
+    if (event.type === "reasoning" && options.includeReasoning !== true) {
+      return;
+    }
+
+    const update = streamInteractiveTurnEvent(buffers, event);
+    buffers = update.buffers;
+    items.push(...update.items);
   };
 }

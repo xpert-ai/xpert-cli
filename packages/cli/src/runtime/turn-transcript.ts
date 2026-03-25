@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { RiskLevel } from "@xpert-cli/contracts";
+import {
+  sanitizePersistedTurnRenderItems,
+  type PersistedTurnRenderItem,
+} from "./render-transcript.js";
 import type { TurnEvent } from "./turn-events.js";
 
 export const TURN_TRANSCRIPT_LIMITS = {
@@ -48,6 +52,7 @@ export interface TurnTranscript {
   toolEvents: TurnToolEvent[];
   permissionEvents: TurnPermissionEvent[];
   changedFiles: string[];
+  renderItems?: PersistedTurnRenderItem[];
   error?: string;
   cancelled?: boolean;
 }
@@ -63,6 +68,7 @@ export class TurnTranscriptRecorder {
   readonly #toolEvents: TurnToolEvent[] = [];
   readonly #permissionEvents: TurnPermissionEvent[] = [];
   readonly #changedFiles = new Set<string>();
+  #renderItems: PersistedTurnRenderItem[] = [];
 
   constructor(input: {
     prompt: string;
@@ -84,6 +90,10 @@ export class TurnTranscriptRecorder {
     }
 
     this.#assistantText += text;
+  }
+
+  setRenderItems(items: PersistedTurnRenderItem[]): void {
+    this.#renderItems = sanitizePersistedTurnRenderItems(items);
   }
 
   setIdentifiers(input: {
@@ -202,6 +212,7 @@ export class TurnTranscriptRecorder {
       toolEvents: this.#toolEvents,
       permissionEvents: this.#permissionEvents,
       changedFiles: [...this.#changedFiles],
+      renderItems: this.#renderItems,
       error: input.error,
       cancelled: input.cancelled,
     });
@@ -241,6 +252,7 @@ export function sanitizeTurnTranscript(value: unknown): TurnTranscript {
     toolEvents: sanitizeToolEvents(record.toolEvents),
     permissionEvents: sanitizePermissionEvents(record.permissionEvents),
     changedFiles: sanitizeChangedFiles(record.changedFiles),
+    renderItems: sanitizePersistedTurnRenderItems(record.renderItems),
     error: clipTextMaybe(readString(record.error), TURN_TRANSCRIPT_LIMITS.errorChars),
     cancelled: record.cancelled === true ? true : undefined,
   };
