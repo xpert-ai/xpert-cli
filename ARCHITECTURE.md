@@ -5,7 +5,12 @@
 1. `xpert-cli` resolves project root from `--cwd`, `git rev-parse --show-toplevel`, or the current shell cwd.
 2. It loads config from env, `~/.xpert-cli/config.json`, and `.xpert-cli.json`.
 3. It opens or creates a local session file in `~/.xpert-cli/sessions/<session-id>.json`.
-3.1. Local session-management commands (`xpert sessions ...`) and `resume <selector>` resolve session ids and unique id prefixes from those local files before any backend preflight.
+3.1. Local session-management commands (`xpert sessions ...`) and `resume <selector>` resolve local session ids before any backend preflight.
+3.2. `resume` semantics are intentionally split:
+   - `resume` restores the latest local session for the current `projectRoot`
+   - `resume <unique-prefix>` resolves prefixes only inside the current `projectRoot`
+   - `resume <full-session-id>` can restore a local session from another project and then reloads config, preflight, local context, permissions, and host execution against that resumed session's own `projectRoot` and `cwd`
+   - when `resume <full-session-id>` is combined with `--cwd`, the override is resolved inside the resumed project and cannot silently change the resumed `projectRoot`
 4. Before entering interactive, `-p`, or `resume`, it compares a saved remote fingerprint (`apiUrl`, `organizationId`, `assistantId`) against the current config.
 5. If that fingerprint changed, it keeps local transcripts / recent files / approvals but clears stale remote `threadId`, `runId`, and `checkpointId`, then shows a short local warning.
 6. It runs a light preflight before the first turn to catch missing assistant config, missing assistants, auth failures, and obvious backend issues early.

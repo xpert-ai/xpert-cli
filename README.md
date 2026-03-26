@@ -44,7 +44,9 @@ Local-first terminal coding agent MVP for the `xpert` platform.
   - list local sessions for the current project, or across all projects
   - delete a local session by full id or unique id prefix
   - prune older local sessions with an explicit `--yes` guard
-  - resume by full id or unique id prefix inside the current project
+  - `resume` restores the latest local session for the current project
+  - `resume <unique-prefix>` resolves prefixes only inside the current project
+  - `resume <full-session-id>` can restore a local session from another project and switches into that session's saved local project context
 - Interactive restart / `resume` now replays recent persisted turn history into inline scrollback:
   - replay comes from the local session file, not a server-side history fetch
   - persisted history is a clipped renderable transcript of recent user / assistant / tool / bash / diff / notice output
@@ -165,6 +167,13 @@ Resume a specific local session by full id or unique prefix:
 ```bash
 node packages/cli/dist/index.js resume 28dfbacc
 ```
+
+`resume` semantics:
+
+- `resume` restores the latest local session for the current project
+- `resume <unique-prefix>` resolves prefixes only inside the current project
+- `resume <full-session-id>` restores that exact local session globally and uses the resumed session's saved `projectRoot` and `cwd`
+- when `resume <full-session-id>` is combined with `--cwd`, the override must stay inside the resumed session's project; it only overrides `cwd`, never `projectRoot`
 
 Manage local sessions without contacting the backend:
 
