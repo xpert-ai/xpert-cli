@@ -31,9 +31,33 @@ describe("prepareSessionRuntime", () => {
       "remote config changed; stale remote run state cleared",
     );
   });
+
+  it("does not rebind a cross-project exact session onto the caller runtime paths by default", async () => {
+    const session = createSession({
+      projectRoot: "/tmp/other-project",
+      cwd: "/tmp/other-project/packages/api",
+    });
+
+    const result = await prepareSessionRuntime(
+      {
+        config: createConfig(),
+        sessionStore: {
+          load: vi.fn().mockResolvedValue(session),
+          resolveLatestForProjectRoot: vi.fn(),
+          create: vi.fn(),
+        },
+      } as never,
+      {
+        sessionSelector: "session-1",
+      },
+    );
+
+    expect(result.session.projectRoot).toBe("/tmp/other-project");
+    expect(result.session.cwd).toBe("/tmp/other-project/packages/api");
+  });
 });
 
-function createConfig() {
+function createConfig(overrides: Record<string, unknown> = {}) {
   return {
     apiUrl: "http://localhost:3000/api/ai",
     apiKey: "test-key",
@@ -49,10 +73,11 @@ function createConfig() {
     projectConfigPath: "/tmp/project/.xpert-cli.json",
     xpertMdPath: undefined,
     xpertMdContent: undefined,
+    ...overrides,
   };
 }
 
-function createSession(): CliSessionState {
+function createSession(overrides: Record<string, unknown> = {}): CliSessionState {
   const now = new Date().toISOString();
   return {
     sessionId: "session-1",
@@ -65,5 +90,6 @@ function createSession(): CliSessionState {
     turns: [],
     createdAt: now,
     updatedAt: now,
+    ...overrides,
   };
 }

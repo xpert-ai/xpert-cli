@@ -13,6 +13,7 @@ import {
   type SessionSelectorResolution,
 } from "./runtime/session-selector.js";
 import { resetStaleRemoteStateIfNeeded } from "./runtime/remote-session.js";
+import { prepareResumeRuntime } from "./runtime/resume-runtime.js";
 import {
   assertCliPreflight,
   renderDoctorReport,
@@ -65,16 +66,16 @@ export async function runCli(argv: string[]): Promise<void> {
     .command("auth")
     .command("status")
     .option("--cwd <path>", "Project working directory")
-    .action(async (options: GlobalOptions) => {
-      await runAuthStatus(options);
+    .action(async (options: GlobalOptions, command: Command) => {
+      await runAuthStatus(resolveCommandOptions(options, command));
     });
 
   program
     .command("doctor")
     .option("--cwd <path>", "Project working directory")
     .option("--json", "Output machine-readable JSON")
-    .action(async (options: DoctorCommandOptions) => {
-      await runDoctor(options);
+    .action(async (options: DoctorCommandOptions, command: Command) => {
+      await runDoctor(resolveCommandOptions(options, command));
     });
 
   const sessionsCommand = program.command("sessions");
@@ -85,15 +86,15 @@ export async function runCli(argv: string[]): Promise<void> {
     .option("--json", "Output machine-readable JSON")
     .option("--all-projects", "List sessions across all local projects")
     .option("--limit <n>", "Limit listed sessions")
-    .action(async (options: SessionsListCommandOptions) => {
-      await runSessionsList(options);
+    .action(async (options: SessionsListCommandOptions, command: Command) => {
+      await runSessionsList(resolveCommandOptions(options, command));
     });
 
   sessionsCommand
     .command("delete <selector>")
     .option("--cwd <path>", "Project working directory")
-    .action(async (selector: string, options: GlobalOptions) => {
-      await runSessionsDelete(selector, options);
+    .action(async (selector: string, options: GlobalOptions, command: Command) => {
+      await runSessionsDelete(selector, resolveCommandOptions(options, command));
     });
 
   sessionsCommand
@@ -102,15 +103,15 @@ export async function runCli(argv: string[]): Promise<void> {
     .option("--keep <n>", "Keep the most recent N local sessions")
     .option("--all-projects", "Prune sessions across all local projects")
     .option("--yes", "Delete matching sessions without prompting")
-    .action(async (options: SessionsPruneCommandOptions) => {
-      await runSessionsPrune(options);
+    .action(async (options: SessionsPruneCommandOptions, command: Command) => {
+      await runSessionsPrune(resolveCommandOptions(options, command));
     });
 
   program
     .command("resume [sessionId]")
     .option("--cwd <path>", "Project working directory")
-    .action(async (sessionId: string | undefined, options: GlobalOptions) => {
-      await runResume(sessionId, options);
+    .action(async (sessionId: string | undefined, options: GlobalOptions, command: Command) => {
+      await runResume(sessionId, resolveCommandOptions(options, command));
     });
 
   await program.parseAsync(argv, { from: "user" });
@@ -175,8 +176,8 @@ async function runMain(options: GlobalOptions): Promise<void> {
 
 async function runResume(sessionId: string | undefined, options: GlobalOptions): Promise<void> {
   const ui = new UiRenderer();
-  const runtime = await prepareRuntime(options);
-  const { config, sessionStore, session, startupNotice } = await prepareSessionRuntime(runtime, {
+  const { config, sessionStore, session, startupNotice } = await prepareResumeRuntime({
+    cwd: options.cwd,
     sessionSelector: sessionId,
   });
 
@@ -354,6 +355,7 @@ export async function prepareSessionRuntime(
   runtime: Awaited<ReturnType<typeof prepareRuntime>>,
   input?: {
     sessionSelector?: string;
+    rebindSessionPaths?: boolean;
   },
 ): Promise<{
   config: Awaited<ReturnType<typeof loadResolvedConfig>>;
@@ -378,8 +380,14 @@ export async function prepareSessionRuntime(
       assistantId: runtime.config.assistantId,
     }));
 
-  session.cwd = runtime.config.cwd;
-  session.projectRoot = runtime.config.projectRoot;
+  const shouldRebindSessionPaths =
+    input?.rebindSessionPaths ??
+    path.resolve(session.projectRoot) === path.resolve(runtime.config.projectRoot);
+
+  if (shouldRebindSessionPaths) {
+    session.cwd = runtime.config.cwd;
+    session.projectRoot = runtime.config.projectRoot;
+  }
 
   const remoteSessionResult = resetStaleRemoteStateIfNeeded(session, runtime.config);
 
@@ -396,6 +404,17 @@ function runVersion(command: string, args: string[]): string | null {
     return null;
   }
   return result.stdout.trim().split("\n")[0] ?? null;
+}
+
+function resolveCommandOptions<T extends GlobalOptions>(options: T, command?: Command): T {
+  if (!command || typeof command.optsWithGlobals !== "function") {
+    return options;
+  }
+
+  return {
+    ...options,
+    ...(command.optsWithGlobals() as Partial<T>),
+  };
 }
 
 async function resolveRequiredSessionSelection(

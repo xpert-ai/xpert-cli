@@ -146,6 +146,39 @@ describe("run local context", () => {
     expect(prompt).toContain("[/Local Context]\n\nUser request:\nFix the request wiring.");
   });
 
+  it("prefers the resumed session cwd and project root over the caller runtime config", async () => {
+    const loadXpertMdMock = vi.fn().mockResolvedValue({
+      path: "/tmp/other-project/XPERT.md",
+      content: "Stay inside the resumed project.",
+    });
+    const getGitStatusMock = vi.fn().mockResolvedValue({
+      available: true,
+      isRepo: true,
+      statusShort: "M packages/api/src/index.ts",
+      truncated: false,
+    });
+
+    const localContext = await buildRunLocalContext({
+      config: createConfig(),
+      session: createSession({
+        projectRoot: "/tmp/other-project",
+        cwd: "/tmp/other-project/packages/api",
+      }),
+      deps: {
+        loadXpertMd: loadXpertMdMock,
+        getGitStatus: getGitStatusMock,
+      },
+    });
+
+    expect(loadXpertMdMock).toHaveBeenCalledWith("/tmp/other-project");
+    expect(getGitStatusMock).toHaveBeenCalledWith({
+      projectRoot: "/tmp/other-project",
+      signal: undefined,
+    });
+    expect(localContext.projectRoot).toBe("/tmp/other-project");
+    expect(localContext.cwd).toBe("/tmp/other-project/packages/api");
+  });
+
   it("preserves recent files and recent tool calls in the rendered block when other sections are large", async () => {
     const longXpertMd = Array.from({ length: 120 }, (_, index) => `rule ${index + 1}`).join("\n");
     const longGitStatus = Array.from({ length: 120 }, (_, index) => `M file-${index}.ts`).join("\n");
